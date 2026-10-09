@@ -1,7 +1,9 @@
 import html
+import json
 import mimetypes
 import os
 import re
+import time
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
@@ -12,30 +14,52 @@ MAX_PHOTO_BYTES = 10 * 1024 * 1024
 MAX_VIDEO_BYTES = 49 * 1024 * 1024
 MAX_MESSAGE_UNITS = 4096
 MAX_CAPTION_UNITS = 1024
+MEDIA_GROUP_SIZE = 10
 MEDIA_HOSTS = ("telesco.pe", "telegram.org", "telegram-cdn.org")
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 
 
-def _bot_request(method, data=None, files=None, timeout=30):
+def _bot_request(method, data=None, files=None, timeout=30, max_attempts=4):
     if not BOT_TOKEN:
         raise RuntimeError("На сервере не задан TELEGRAM_BOT_TOKEN.")
-    try:
-        response = requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
-            data=data or {},
-            files=files,
-            timeout=timeout,
-        )
-    except requests.RequestException as exc:
-        raise RuntimeError("Не удалось подключиться к Telegram Bot API.") from exc
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise RuntimeError(f"Telegram Bot API вернул HTTP {response.status_code}.") from exc
-    if not response.ok or not payload.get("ok"):
+
+    def sleep_backoff(attempt, retry_after=None):
+        if retry_after:
+            time.sleep(min(max(int(retry_after), 1), 30))
+        else:
+            time.sleep(min(2 ** attempt, 8))
+
+    for attempt in range(max_attempts):
+        try:
+            response = requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
+                data=data or {},
+                files=files,
+                timeout=timeout,
+            )
+        except requests.RequestException as exc:
+            if attempt == max_attempts - 1:
+                raise RuntimeError("Не удалось подключиться к Telegram Bot API.") from exc
+            sleep_backoff(attempt)
+            continue
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            if response.status_code >= 500 and attempt < max_attempts - 1:
+                sleep_backoff(attempt)
+                continue
+            raise RuntimeError(f"Telegram Bot API вернул HTTP {response.status_code}.") from exc
+        if response.ok and payload.get("ok"):
+            return payload["result"]
+        code = payload.get("error_code", response.status_code)
         description = payload.get("description", "неизвестная ошибка")
-        raise RuntimeError(f"Telegram Bot API ({payload.get('error_code', response.status_code)}): {description}")
-    return payload["result"]
+        if code == 429 or (code >= 500 and attempt < max_attempts - 1):
+            retry_after = (payload.get("parameters") or {}).get("retry_after")
+            if attempt == max_attempts - 1:
+                raise RuntimeError(f"Telegram Bot API (429): {description}")
+            sleep_backoff(attempt, retry_after if code == 429 else None)
+            continue
+        raise RuntimeError(f"Telegram Bot API ({code}): {description}")
 
 
 def bot_request(method, data=None, files=None, timeout=30):
@@ -251,6 +275,33 @@ def download_media(media):
 def publish_post(post, destination):
     text = post.get("text", "").strip()
     media_items = post.get("media", [])
+    if len(media_items) > 1:
+        caption_parts = split_text(text, MAX_CAPTION_UNITS) if text else []
+        first_caption = caption_parts.pop(0) if caption_parts else None
+        for offset in range(0, len(media_items), MEDIA_GROUP_SIZE):
+            chunk = media_items[offset:offset + MEDIA_GROUP_SIZE]
+            media_json = []
+            files = {}
+            for index, media in enumerate(chunk):
+                filename, binary_data = download_media(media)
+                field = f"media_{offset + index}"
+                files[field] = (filename, binary_data)
+                entry = {
+                    "type": "photo" if media["type"] == "photo" else "video",
+                    "media": f"attach://{field}",
+                }
+                if offset == 0 and index == 0 and first_caption:
+                    entry["caption"] = first_caption
+                media_json.append(entry)
+            bot_request(
+                "sendMediaGroup",
+                data={"chat_id": destination, "media": json.dumps(media_json)},
+                files=files,
+                timeout=60,
+            )
+        for part in caption_parts:
+            bot_request("sendMessage", {"chat_id": destination, "text": part})
+        return True
     if media_items:
         caption_parts = split_text(text, MAX_CAPTION_UNITS) if text else []
         for index, media in enumerate(media_items):

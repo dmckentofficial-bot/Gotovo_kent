@@ -4,6 +4,12 @@ Private Telegram Mini App for forwarding new posts from up to five public Telegr
 
 The Mini App itself adapts to the Telegram theme, validates the form before saving, asks for confirmation before the forwarding runs, and shows live status with per-status statistics (forwarded / filtered / skipped / errors), auto-refreshing every minute.
 
+## Reliability
+
+- **Albums:** posts with several photos/videos are sent as one Telegram media group (`sendMediaGroup`), split into groups of 10 when larger.
+- **Transient errors:** Telegram Bot API calls are retried on `429` (respecting `retry_after`) and `5xx` with exponential backoff; permanent errors (400/401/403) fail fast.
+- **De-duplication:** a post is never forwarded twice, even after a restart that loses the cursor — the history table is checked before publishing.
+
 ## Deploy on Render
 
 1. Push this project to a **private GitHub repository** and create a Render Blueprint from that repository. The included `render.yaml` creates one Docker web service on Render's free plan.
@@ -29,3 +35,16 @@ uvicorn app.main:app --reload
 ```
 
 The Mini App itself must be opened from Telegram using an HTTPS URL. A localhost browser tab is not a valid Telegram Mini App launch context.
+
+### Full local check with ngrok (through Telegram)
+
+To test real end-to-end forwarding on your machine, the app must be reachable over HTTPS. The helper script opens an ngrok tunnel, picks up the public URL as `APP_URL`, and starts uvicorn:
+
+```sh
+brew install ngrok
+ngrok config add-authtoken <YOUR_NGROK_TOKEN>   # from dashboard.ngrok.com
+cp .env.example .env                            # fill in the bot token and your ID
+bash scripts/run_local.sh
+```
+
+Then open the bot chat in Telegram and tap **«Открыть приложение»** — the menu button is configured automatically. Add one source channel and the destination channel (the bot must be an administrator there), press **«Проверить подключение»**, then **«Запустить пересылку»**.

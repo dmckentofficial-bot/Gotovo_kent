@@ -91,6 +91,15 @@ def set_cursor(source, message_id):
         )
 
 
+def already_forwarded(source, message_id):
+    with connect() as connection:
+        row = connection.execute(
+            "SELECT 1 FROM history WHERE source = ? AND message_id = ? AND status = 'forwarded' LIMIT 1",
+            (source, str(message_id)),
+        ).fetchone()
+    return row is not None
+
+
 def write_history(post, source, status, details=""):
     media = post.get("media", [])
     media_type = ", ".join(dict.fromkeys(item.get("type", "media") for item in media)) or "text"

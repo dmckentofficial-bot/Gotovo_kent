@@ -53,6 +53,9 @@ def poll_once():
             )
             for post in new_posts:
                 post_id = int(post["id"])
+                if database.already_forwarded(source, post.get("id", "")):
+                    database.set_cursor(source, post_id)
+                    continue
                 if not _matches_filter(post.get("text", ""), config):
                     database.write_history(post, source, "filtered")
                     database.set_cursor(source, post_id)
