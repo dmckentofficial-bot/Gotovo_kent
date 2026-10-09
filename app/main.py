@@ -44,6 +44,8 @@ async def lifespan(_app):
     admin_id = os.environ.get("ADMIN_TELEGRAM_ID", "").strip()
     if telegram.BOT_TOKEN and app_url and admin_id:
         try:
+            bot = telegram.bot_request("getMe")
+            database.set_state("bot_username", bot.get("username", ""))
             worker.configure_menu_button(app_url)
             database.set_state("menu_error", "")
         except RuntimeError as exc:
@@ -118,12 +120,18 @@ def status(_user=Depends(require_admin)):
     last_checked = database.get_state("last_checked")
     return {
         "running": bool(config.get("enabled") and telegram.BOT_TOKEN and config["sources"] and config["destination"]),
+        "bot": database.get_state("bot_username"),
         "sources": config["sources"],
         "destination": config["destination"],
         "last_checked": int(last_checked) if last_checked.isdigit() else None,
         "last_error": database.get_state("last_error"),
         "menu_error": database.get_state("menu_error"),
     }
+
+
+@app.get("/api/stats")
+def stats(_user=Depends(require_admin)):
+    return database.history_stats()
 
 
 @app.put("/api/service")

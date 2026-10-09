@@ -10,18 +10,24 @@
   <script defer src="/static/app.js"></script>
 </head>
 <body>
+  <div id="boot" class="boot">
+    <div class="spinner" aria-hidden="true"></div>
+    <p>Загрузка настроек…</p>
+  </div>
+
   <main class="shell">
     <header class="hero">
       <div class="brand-icon">✈️</div>
-      <div>
+      <div class="hero-text">
         <p class="eyebrow">TELEGRAM MINI APP</p>
         <h1>Пересылка</h1>
         <p class="subhead">Публичные каналы → ваш канал</p>
+        <p id="bot-line" class="botline"></p>
       </div>
-      <div id="service-badge" class="badge">Проверка…</div>
+      <div id="service-badge" class="badge"><span class="dot" aria-hidden="true"></span>Проверка…</div>
     </header>
 
-    <div id="notice" class="notice" role="status" hidden></div>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
 
     <section class="card">
       <div class="section-heading">
@@ -40,7 +46,7 @@
       <p class="eyebrow">ПОЛУЧАТЕЛЬ</p>
       <h2>Канал назначения</h2>
       <label class="field-label" for="destination">Username канала или ссылка t.me</label>
-      <input id="destination" class="text-input" type="text" placeholder="@мой_канал">
+      <input id="destination" class="text-input" type="text" placeholder="@мой_канал" autocomplete="off" spellcheck="false">
       <p class="hint">Добавьте бота в канал администратором с правом публикации.</p>
     </section>
 
@@ -70,7 +76,7 @@
     <div class="actions">
       <button id="save" class="button primary" type="button">Сохранить настройки</button>
       <button id="test" class="button secondary" type="button">Проверить подключение</button>
-      <button id="toggle-service" class="button secondary" type="button">▶️ Запустить пересылку</button>
+      <button id="toggle-service" class="button primary" type="button">▶️ Запустить пересылку</button>
     </div>
 
     <section class="card history-card">
@@ -79,12 +85,25 @@
           <p class="eyebrow">МОНИТОРИНГ</p>
           <h2>Последние события</h2>
         </div>
-        <button id="refresh" class="icon-button" type="button" aria-label="Обновить">↻</button>
+        <button id="refresh" class="icon-button" type="button" aria-label="Обновить" title="Обновить">↻</button>
       </div>
+      <div id="stats" class="stats" hidden></div>
       <div id="status-detail" class="hint"></div>
       <div id="history" class="history-list"></div>
     </section>
-    <footer>Render Free может усыплять сервис при неактивности; непрерывная пересылка не гарантируется. Настройки и история на бесплатном диске могут сброситься при перезапуске или деплое.</footer>
+
+    <footer>Обновление статуса — автоматически, раз в минуту. Render Free может усыплять сервис при неактивности; непрерывная пересылка не гарантируется. Настройки и история на бесплатном диске могут сброситься при перезапуске или деплое.</footer>
   </main>
+
+  <div id="confirm" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+      <h3 id="confirm-title"></h3>
+      <p id="confirm-message"></p>
+      <div class="modal-actions">
+        <button id="confirm-cancel" class="button secondary" type="button">Отмена</button>
+        <button id="confirm-ok" class="button primary" type="button"></button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

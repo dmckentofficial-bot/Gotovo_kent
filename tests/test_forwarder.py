@@ -2,7 +2,9 @@ import hashlib
 import hmac
 import json
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlencode
 
@@ -67,6 +69,34 @@ class AuthTests(unittest.TestCase):
              patch("app.auth.time.time", return_value=2000000010):
             result = auth.validate_init_data(urlencode(values))
         self.assertEqual(result["id"], user["id"])
+
+
+class DatabaseTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.original_path = database.DATABASE_PATH
+        database.DATABASE_PATH = Path(self.tmp_dir.name) / "test.sqlite3"
+        database.initialize()
+
+    def tearDown(self):
+        database.DATABASE_PATH = self.original_path
+        self.tmp_dir.cleanup()
+
+    def test_history_stats_counts_statuses(self):
+        post = {"id": "1", "text": "привет", "media": []}
+        database.write_history(post, "source", "forwarded")
+        database.write_history(post, "source", "forwarded")
+        database.write_history(post, "source", "filtered")
+        database.write_history(post, "source", "error")
+        stats = database.history_stats()
+        self.assertEqual(stats["forwarded"], 2)
+        self.assertEqual(stats["filtered"], 1)
+        self.assertEqual(stats["errors"], 1)
+        self.assertEqual(stats["skipped"], 0)
+        self.assertEqual(stats["total"], 4)
+
+    def test_history_stats_empty(self):
+        self.assertEqual(database.history_stats()["total"], 0)
 
 
 class WorkerTests(unittest.TestCase):

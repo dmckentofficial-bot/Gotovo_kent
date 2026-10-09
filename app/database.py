@@ -120,6 +120,21 @@ def recent_history(limit=50):
     return [dict(row) for row in rows]
 
 
+def history_stats():
+    with connect() as connection:
+        rows = connection.execute(
+            "SELECT status, COUNT(*) AS count FROM history GROUP BY status"
+        ).fetchall()
+    counts = {row["status"]: row["count"] for row in rows}
+    return {
+        "forwarded": counts.get("forwarded", 0),
+        "filtered": counts.get("filtered", 0),
+        "skipped": counts.get("skipped", 0),
+        "errors": counts.get("error", 0),
+        "total": sum(counts.values()),
+    }
+
+
 def set_state(key, value):
     with connect() as connection:
         connection.execute(

@@ -2,6 +2,8 @@
 
 Private Telegram Mini App for forwarding new posts from up to five public Telegram channels into one destination channel. It preserves post text and links, splits long text to Telegram's message limits, and uploads supported photos and videos. Forwarding is off until the owner starts it in the Mini App. The bot token is read only from the server environment and is never returned to the Mini App.
 
+The Mini App itself adapts to the Telegram theme, validates the form before saving, asks for confirmation before the forwarding runs, and shows live status with per-status statistics (forwarded / filtered / skipped / errors), auto-refreshing every minute.
+
 ## Deploy on Render
 
 1. Push this project to a **private GitHub repository** and create a Render Blueprint from that repository. The included `render.yaml` creates one Docker web service on Render's free plan.
