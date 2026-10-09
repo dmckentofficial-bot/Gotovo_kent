@@ -25,6 +25,10 @@ class ConfigPayload(BaseModel):
     filter_mode: Literal["any", "all"] = "any"
 
 
+class ServicePayload(BaseModel):
+    enabled: bool
+
+
 def require_admin(x_telegram_init_data: str | None = Header(default=None)):
     try:
         return auth.validate_init_data(x_telegram_init_data or "")
@@ -40,7 +44,7 @@ async def lifespan(_app):
     admin_id = os.environ.get("ADMIN_TELEGRAM_ID", "").strip()
     if telegram.BOT_TOKEN and app_url and admin_id:
         try:
-            worker.configure_menu_button(app_url, admin_id)
+            worker.configure_menu_button(app_url)
             database.set_state("menu_error", "")
         except RuntimeError as exc:
             database.set_state("menu_error", str(exc))
@@ -94,6 +98,7 @@ def put_config(payload: ConfigPayload, _user=Depends(require_admin)):
         "filter_enabled": payload.filter_enabled,
         "filter_terms": payload.filter_terms.strip(),
         "filter_mode": payload.filter_mode,
+        "enabled": database.get_config().get("enabled", False),
     }
     database.set_config(config)
     return {"saved": True, "config": config}
@@ -112,13 +117,26 @@ def status(_user=Depends(require_admin)):
     config = database.get_config()
     last_checked = database.get_state("last_checked")
     return {
-        "running": bool(telegram.BOT_TOKEN and config["sources"] and config["destination"]),
+        "running": bool(config.get("enabled") and telegram.BOT_TOKEN and config["sources"] and config["destination"]),
         "sources": config["sources"],
         "destination": config["destination"],
         "last_checked": int(last_checked) if last_checked.isdigit() else None,
         "last_error": database.get_state("last_error"),
         "menu_error": database.get_state("menu_error"),
     }
+
+
+@app.put("/api/service")
+def set_service(payload: ServicePayload, _user=Depends(require_admin)):
+    config = database.get_config()
+    if payload.enabled:
+        try:
+            worker.validate_configuration()
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    config["enabled"] = payload.enabled
+    database.set_config(config)
+    return {"running": payload.enabled}
 
 
 @app.get("/api/history")

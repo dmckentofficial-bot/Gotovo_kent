@@ -6,7 +6,14 @@ from pathlib import Path
 
 
 DATABASE_PATH = Path(os.environ.get("DATABASE_PATH", "data/app.sqlite3"))
-DEFAULT_CONFIG = {"sources": [], "destination": "", "filter_enabled": False, "filter_terms": "", "filter_mode": "any"}
+DEFAULT_CONFIG = {
+    "sources": [],
+    "destination": "",
+    "filter_enabled": False,
+    "filter_terms": "",
+    "filter_mode": "any",
+    "enabled": False,
+}
 
 
 def connect():

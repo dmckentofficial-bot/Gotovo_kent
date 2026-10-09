@@ -6,7 +6,7 @@
   const historyNode = document.querySelector("#history");
   const addSourceButton = document.querySelector("#add-source");
   const filterEnabled = document.querySelector("#filter-enabled");
-  let config = { sources: [], destination: "", filter_enabled: false, filter_terms: "", filter_mode: "any" };
+  let config = { sources: [], destination: "", filter_enabled: false, filter_terms: "", filter_mode: "any", enabled: false };
 
   webApp?.ready();
   webApp?.expand();
@@ -76,8 +76,13 @@
 
   function setBusy(button, busy) {
     button.disabled = busy;
-    if (busy) button.dataset.label = button.textContent;
-    button.textContent = busy ? "Подождите…" : (button.dataset.label || button.textContent);
+    if (busy) {
+      button.dataset.label = button.textContent;
+      button.textContent = "Подождите…";
+    } else {
+      if (button.dataset.label) button.textContent = button.dataset.label;
+      delete button.dataset.label;
+    }
   }
 
   async function loadConfig() {
@@ -95,6 +100,9 @@
     const badge = document.querySelector("#service-badge");
     badge.textContent = status.running ? "Мониторинг включён" : "Настройте каналы";
     badge.className = `badge ${status.running ? "running" : "stopped"}`;
+    const toggle = document.querySelector("#toggle-service");
+    toggle.textContent = status.running ? "⏹ Остановить пересылку" : "▶️ Запустить пересылку";
+    toggle.className = `button ${status.running ? "secondary" : "primary"}`;
     const details = [];
     if (status.last_checked) {
       details.push(`Последняя проверка: ${new Date(status.last_checked * 1000).toLocaleTimeString("ru-RU")}`);
@@ -178,6 +186,30 @@
       showNotice(error.message, "error");
     } finally {
       setBusy(button, false);
+    }
+  });
+
+  document.querySelector("#toggle-service").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    setBusy(button, true);
+    try {
+      const saved = await api("/api/config", { method: "PUT", body: JSON.stringify(readForm()) });
+      config = saved.config;
+      const currentlyRunning = document.querySelector("#service-badge").classList.contains("running");
+      await api("/api/service", {
+        method: "PUT",
+        body: JSON.stringify({ enabled: !currentlyRunning }),
+      });
+      showNotice(currentlyRunning ? "Пересылка остановлена." : "Настройки проверены, пересылка запущена.", "success");
+    } catch (error) {
+      showNotice(error.message, "error");
+    } finally {
+      setBusy(button, false);
+      try {
+        await refreshStatus();
+      } catch (error) {
+        showNotice(`Не удалось обновить статус: ${error.message}`, "error");
+      }
     }
   });
 

@@ -30,6 +30,9 @@ def poll_once():
     if not telegram.BOT_TOKEN:
         database.set_state("last_error", "На сервере не задан токен бота.")
         return
+    if not config.get("enabled"):
+        database.set_state("last_checked", int(time.time()))
+        return
     if not config["sources"] or not config["destination"]:
         database.set_state("last_error", "")
         database.set_state("last_checked", int(time.time()))
@@ -111,13 +114,12 @@ def validate_configuration():
     }
 
 
-def configure_menu_button(app_url, admin_id):
+def configure_menu_button(app_url):
     if not app_url:
         return
     telegram.bot_request(
         "setChatMenuButton",
         {
-            "chat_id": admin_id,
             "menu_button": {
                 "type": "web_app",
                 "text": "Открыть приложение",

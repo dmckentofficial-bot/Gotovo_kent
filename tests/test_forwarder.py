@@ -77,6 +77,7 @@ class WorkerTests(unittest.TestCase):
             "filter_enabled": False,
             "filter_terms": "",
             "filter_mode": "any",
+            "enabled": True,
         }
         feeds = {
             source: [{"id": "2", "text": "New post", "media": []}]

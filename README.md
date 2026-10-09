@@ -1,6 +1,6 @@
 # Telegram Forwarder Mini App
 
-Private Telegram Mini App for forwarding new posts from up to five public Telegram channels into one destination channel. It preserves post text and links, splits long text to Telegram's message limits, and uploads supported photos and videos. The bot token is read only from the server environment and is never returned to the Mini App.
+Private Telegram Mini App for forwarding new posts from up to five public Telegram channels into one destination channel. It preserves post text and links, splits long text to Telegram's message limits, and uploads supported photos and videos. Forwarding is off until the owner starts it in the Mini App. The bot token is read only from the server environment and is never returned to the Mini App.
 
 ## Deploy on Render
 
