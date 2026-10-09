@@ -4,12 +4,12 @@ Private Telegram Mini App for forwarding new posts from up to five public Telegr
 
 ## Deploy on Render
 
-1. Push this project to a **private GitHub repository** and create a Render Blueprint from that repository. The included `render.yaml` creates one Docker web service with a persistent disk; keep it at one instance to prevent duplicate forwarding.
+1. Push this project to a **private GitHub repository** and create a Render Blueprint from that repository. The included `render.yaml` creates one Docker web service on Render's free plan.
 2. In Render, set `TELEGRAM_BOT_TOKEN` to a newly issued bot token, and set `ADMIN_TELEGRAM_ID` to the numeric Telegram user ID allowed to administer the Mini App.
 3. Wait for the service URL to be assigned and verify `/health` returns `{"status":"ok"}`. Render provides `RENDER_EXTERNAL_URL`; the app uses it to add an “Открыть приложение” Web App button to the configured admin's bot chat.
 4. Open the bot chat in Telegram and launch the Mini App from its menu button. Add the public source channels and destination; the bot must be an administrator in the destination with permission to publish.
 
-The Render service must stay available for continuous polling and its persistent disk stores settings, cursors, and history. The Mini App rejects requests that are not signed by Telegram or do not come from `ADMIN_TELEGRAM_ID`.
+**Free-plan limitations:** Render may spin down an inactive free web service. Forwarding only happens while the service is awake, so continuous forwarding is not guaranteed if it is left idle. The free filesystem is ephemeral; settings, cursors, and history can be lost after a restart or deploy, and previously forwarded posts might be seen again. Upgrade to a paid instance with a persistent disk for dependable unattended forwarding. The Mini App rejects requests that are not signed by Telegram or do not come from `ADMIN_TELEGRAM_ID`.
 
 ## Local checks
 
