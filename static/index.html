@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101a2b">
+  <title>Пересылка Telegram</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div class="brand-icon">✈️</div>
+      <div>
+        <p class="eyebrow">TELEGRAM MINI APP</p>
+        <h1>Пересылка</h1>
+        <p class="subhead">Публичные каналы → ваш канал</p>
+      </div>
+      <div id="service-badge" class="badge">Проверка…</div>
+    </header>
+
+    <div id="notice" class="notice" role="status" hidden></div>
+
+    <section class="card">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">ИСТОЧНИКИ</p>
+          <h2>Каналы</h2>
+        </div>
+        <span id="source-counter" class="counter">0 / 5</span>
+      </div>
+      <p class="hint">Добавьте публичные каналы. Новые посты будут отправляться в одно место.</p>
+      <div id="sources" class="sources"></div>
+      <button id="add-source" class="button secondary" type="button">＋ Добавить канал</button>
+    </section>
+
+    <section class="card">
+      <p class="eyebrow">ПОЛУЧАТЕЛЬ</p>
+      <h2>Канал назначения</h2>
+      <label class="field-label" for="destination">Username канала или ссылка t.me</label>
+      <input id="destination" class="text-input" type="text" placeholder="@мой_канал">
+      <p class="hint">Добавьте бота в канал администратором с правом публикации.</p>
+    </section>
+
+    <section class="card">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">НАСТРОЙКИ</p>
+          <h2>Фильтр постов</h2>
+        </div>
+        <label class="toggle" aria-label="Включить фильтр">
+          <input id="filter-enabled" type="checkbox">
+          <span></span>
+        </label>
+      </div>
+      <div id="filter-options" hidden>
+        <label class="field-label" for="filter-terms">Слова или хэштеги</label>
+        <textarea id="filter-terms" class="text-input" rows="3" placeholder="скидка&#10;#новости"></textarea>
+        <label class="field-label" for="filter-mode">Условие совпадения</label>
+        <select id="filter-mode" class="text-input">
+          <option value="any">Любое совпадение</option>
+          <option value="all">Все совпадения</option>
+        </select>
+      </div>
+      <p class="hint">Без фильтра копируются все посты, включая ссылки и полный текст.</p>
+    </section>
+
+    <div class="actions">
+      <button id="save" class="button primary" type="button">Сохранить настройки</button>
+      <button id="test" class="button secondary" type="button">Проверить подключение</button>
+    </div>
+
+    <section class="card history-card">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">МОНИТОРИНГ</p>
+          <h2>Последние события</h2>
+        </div>
+        <button id="refresh" class="icon-button" type="button" aria-label="Обновить">↻</button>
+      </div>
+      <div id="status-detail" class="hint"></div>
+      <div id="history" class="history-list"></div>
+    </section>
+    <footer>Работает, пока приложение размещено на HTTPS-сервере.</footer>
+  </main>
+</body>
+</html>

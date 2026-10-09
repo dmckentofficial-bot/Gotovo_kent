@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: telegram-mini-app
+    runtime: docker
+    plan: starter
+    healthCheckPath: /health
+    disk:
+      name: telegram-mini-app-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_PATH
+        value: /data/app.sqlite3
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ADMIN_TELEGRAM_ID
+        sync: false

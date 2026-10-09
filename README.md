@@ -1,0 +1,29 @@
+# Telegram Forwarder Mini App
+
+Private Telegram Mini App for forwarding new posts from up to five public Telegram channels into one destination channel. It preserves post text and links, splits long text to Telegram's message limits, and uploads supported photos and videos. The bot token is read only from the server environment and is never returned to the Mini App.
+
+## Deploy on Render
+
+1. Push this project to a **private GitHub repository** and create a Render Blueprint from that repository. The included `render.yaml` creates one Docker web service with a persistent disk; keep it at one instance to prevent duplicate forwarding.
+2. In Render, set `TELEGRAM_BOT_TOKEN` to a newly issued bot token, and set `ADMIN_TELEGRAM_ID` to the numeric Telegram user ID allowed to administer the Mini App.
+3. Wait for the service URL to be assigned and verify `/health` returns `{"status":"ok"}`. Render provides `RENDER_EXTERNAL_URL`; the app uses it to add an “Открыть приложение” Web App button to the configured admin's bot chat.
+4. Open the bot chat in Telegram and launch the Mini App from its menu button. Add the public source channels and destination; the bot must be an administrator in the destination with permission to publish.
+
+The Render service must stay available for continuous polling and its persistent disk stores settings, cursors, and history. The Mini App rejects requests that are not signed by Telegram or do not come from `ADMIN_TELEGRAM_ID`.
+
+## Local checks
+
+```sh
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+python -m unittest discover -s tests -v
+```
+
+To run the web server locally, provide `TELEGRAM_BOT_TOKEN` and `ADMIN_TELEGRAM_ID`, then run:
+
+```sh
+uvicorn app.main:app --reload
+```
+
+The Mini App itself must be opened from Telegram using an HTTPS URL. A localhost browser tab is not a valid Telegram Mini App launch context.
