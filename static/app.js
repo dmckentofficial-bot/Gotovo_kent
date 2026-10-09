@@ -1,5 +1,6 @@
 (() => {
-  const webApp = window.Telegram?.WebApp;
+  const isDemo = new URLSearchParams(window.location.search).has("demo");
+  const webApp = isDemo ? createDemoWebApp() : (window.Telegram?.WebApp || null);
   const themeParams = webApp?.themeParams || {};
   const initData = webApp?.initData || "";
 
@@ -35,6 +36,128 @@
   const AUTO_REFRESH_MS = 60000;
   const STATUS_LABELS = { forwarded: "Переслано", filtered: "Фильтр", skipped: "Пропущено", error: "Ошибка" };
   const STATUS_ICONS = { forwarded: "✅", filtered: "🚫", skipped: "⏭️", error: "⚠️" };
+
+  const DEMOSTATE = {
+    running: true,
+    lastChecked: Math.floor(Date.now() / 1000) - 42,
+    config: {
+      sources: ["channel_tech", "channel_news", "channel_sport", "channel_finance", "channel_design"],
+      destination: "@my_destination",
+      filter_enabled: true,
+      filter_terms: "скидка\n#новости",
+      filter_mode: "any",
+      enabled: true,
+    },
+  };
+
+  const DEMO_HISTORY_TEMPLATES = [
+    { status: "forwarded", media_type: "text", message: "Запуск нового сервиса: промокод СКИДКА20 действует до конца недели.", details: "" },
+    { status: "forwarded", media_type: "photo", message: "Новая коллекция уже в продаже. Подробности по ссылке внутри поста.", details: "" },
+    { status: "filtered", media_type: "text", message: "Повтор анонса про акцию из соседнего канала.", details: "Не прошёл фильтр по ключевым словам." },
+    { status: "forwarded", media_type: "video", message: "Видеообзор обновления 2.0 за 90 секунд.", details: "" },
+    { status: "forwarded", media_type: "text", message: "Итоги недели: пять главных новостей отрасли в одном посте.", details: "" },
+    { status: "skipped", media_type: "text", message: "", details: "Пустой пост без поддерживаемого медиа." },
+    { status: "forwarded", media_type: "photo", message: "Оформляем подборку из трёх фото — сегодня в 18:00.", details: "" },
+    { status: "filtered", media_type: "text", message: "Анонс стрима без нужных хэштегов.", details: "Не прошёл фильтр по ключевым словам." },
+    { status: "error", media_type: "photo", message: "Изображение в этот раз слишком тяжёлое.", details: "Файл photo превышает лимит загрузки Telegram." },
+  ];
+
+  function demoHistory() {
+    const now = Date.now();
+    return DEMO_HISTORY_TEMPLATES.map((item, index) => ({
+      created_at: new Date(now - (index * 7 + 1) * 60 * 1000).toISOString(),
+      source: index % 2 ? "channel_news" : "channel_tech",
+      message_id: String(1000 - index),
+      status: item.status,
+      media_type: item.media_type,
+      message: item.message,
+      details: item.details,
+    }));
+  }
+
+  function demoStats() {
+    const counts = {};
+    demoHistory().forEach((item) => { counts[item.status] = (counts[item.status] || 0) + 1; });
+    return {
+      forwarded: counts.forwarded || 0,
+      filtered: counts.filtered || 0,
+      skipped: counts.skipped || 0,
+      errors: counts.error || 0,
+      total: demoHistory().length,
+    };
+  }
+
+  async function demoApi(path, options = {}) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const method = (options.method || "GET").toUpperCase();
+    const key = String(path).replace(/^\/+/, "");
+    if (key === "api/config") {
+      if (method === "PUT") {
+        const payload = JSON.parse(options.body || "{}");
+        DEMOSTATE.config = { ...DEMOSTATE.config, ...payload };
+      }
+      return { ...DEMOSTATE.config, sources: [...DEMOSTATE.config.sources] };
+    }
+    if (key === "api/status") {
+      return {
+        running: DEMOSTATE.running,
+        bot: "demo_forwarder_bot",
+        sources: [...DEMOSTATE.config.sources],
+        destination: DEMOSTATE.config.destination,
+        last_checked: DEMOSTATE.lastChecked,
+        last_error: "",
+        menu_error: "",
+      };
+    }
+    if (key === "api/history") return demoHistory();
+    if (key === "api/stats") return demoStats();
+    if (key === "api/test") {
+      return {
+        sources: DEMOSTATE.config.sources.map((source, index) => ({ source, available: true, posts: 32 - index * 4 })),
+        bot: "demo_forwarder_bot",
+        destination: DEMOSTATE.config.destination,
+      };
+    }
+    if (key === "api/service" && method === "PUT") {
+      const payload = JSON.parse(options.body || "{}");
+      DEMOSTATE.running = Boolean(payload.enabled);
+      return { running: DEMOSTATE.running };
+    }
+    return {};
+  }
+
+  function createDemoWebApp() {
+    const light = new URLSearchParams(window.location.search).has("light");
+    const palette = light ? {
+      bg_color: "#f6f8fa",
+      secondary_bg_color: "#ffffff",
+      text_color: "#101828",
+      hint_color: "#5b6572",
+      link_color: "#2481cc",
+      button_color: "#2481cc",
+      button_text_color: "#ffffff",
+    } : {
+      bg_color: "#0b1220",
+      secondary_bg_color: "#121d2e",
+      text_color: "#f3f7ff",
+      hint_color: "#9db0c8",
+      link_color: "#43c4e5",
+      button_color: "#2a9ecb",
+      button_text_color: "#06202c",
+    };
+    const noop = () => {};
+    return {
+      initData: 'query_id=demo&user={"id":123456,"first_name":"Демо"}&auth_date=0',
+      colorScheme: light ? "light" : "dark",
+      themeParams: palette,
+      ready: noop,
+      expand: noop,
+      disableVerticalSwipes: noop,
+      setHeaderColor: noop,
+      setBackgroundColor: noop,
+      HapticFeedback: { impactOccurred: noop, notificationOccurred: noop },
+    };
+  }
 
   webApp?.ready();
   webApp?.expand();
@@ -85,6 +208,7 @@
   }
 
   async function api(path, options = {}) {
+    if (isDemo) return demoApi(path, options);
     const response = await fetch(path, {
       ...options,
       headers: {
@@ -506,6 +630,9 @@
       return;
     }
     try {
+      if (isDemo) {
+        showNotice("Демо-режим: данные имитированы локально, ничего никуда не пересылается.");
+      }
       await loadConfig();
       await refreshStatus();
     } catch (error) {
