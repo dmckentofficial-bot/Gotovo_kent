@@ -16,11 +16,15 @@ tunnel_alive() {
   local url="$1"
   [ -n "$url" ] || return 1
   # Туннели мигают: живым считаем только при 2 успехах из 3 замеров.
-  local ok=0
+  # Важно: curl возвращает 0 даже на HTTP 502, поэтому смотрим именно код
+  # ответа — иначе сторож вечно рапортует «ok» на мёртвом туннеле.
+  local ok=0 code
   for _ in 1 2 3; do
-    if curl -s -m 10 "$url/health" >/dev/null 2>&1; then
-      ok=$((ok + 1))
-    fi
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 "$url/health" 2>/dev/null || echo 000)
+    case "$code" in
+      200|301|302) ok=$((ok + 1)) ;;
+    esac
+    sleep 1
   done
   [ "$ok" -ge 2 ]
 }
