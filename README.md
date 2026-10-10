@@ -8,6 +8,8 @@ The Mini App uses a fixed dark "Luxe" glass theme (Playfair Display + Manrope, b
 
 - **Signature (подпись):** an optional text appended to the end of every forwarded post and media caption, edited on its own tab with a live preview.
 - **PIN code:** an optional 4-digit lock on top of the Telegram owner check. It is stored as a PBKDF2 hash, asks for the code on every launch, and locks out after repeated wrong attempts. Set up, change, or disable it in Settings.
+- **Password access (пароль доступа):** the Mini App can be controlled from a plain browser without Telegram by entering `ADMIN_KEY` on an iPhone-style passcode screen with a Matrix digital-rain background. Wrong attempts are rate-limited (5 fails → 60 s lockout).
+- **Channel-to-channel only:** the destination must be a real Telegram channel where the bot is an administrator with posting rights; private chats are rejected.
 - **Instant start:** enabling forwarding saves the settings, validates the sources and bot rights, and runs the first check immediately instead of waiting for the next poll.
 - **Video/photo albums, long-text splitting, de-duplication, and retry** behave as described under Reliability.
 
@@ -41,17 +43,19 @@ To run the web server locally, provide `TELEGRAM_BOT_TOKEN` and `ADMIN_TELEGRAM_
 uvicorn app.main:app --reload
 ```
 
-The Mini App itself must be opened from Telegram using an HTTPS URL. A localhost browser tab is not a valid Telegram Mini App launch context.
+The Mini App itself must be opened from Telegram using an HTTPS URL. A localhost browser tab is not a valid Telegram Mini App launch context — but you can still control it from a browser by entering the `ADMIN_KEY` password on the start screen.
 
-### Full local check with ngrok (through Telegram)
+### Full local check with a free HTTPS tunnel (through Telegram or browser)
 
-To test real end-to-end forwarding on your machine, the app must be reachable over HTTPS. The helper script opens an ngrok tunnel, picks up the public URL as `APP_URL`, and starts uvicorn:
+To test real end-to-end forwarding on your machine, the app must be reachable over HTTPS without a GitHub account. The helper script keeps uvicorn running, maintains a free `localhost.run` tunnel, stores its URL as `APP_URL`, and re-points the bot's menu button:
 
 ```sh
-brew install ngrok
-ngrok config add-authtoken <YOUR_NGROK_TOKEN>   # from dashboard.ngrok.com
-cp .env.example .env                            # fill in the bot token and your ID
-bash scripts/run_local.sh
+cp .env.example .env   # fill in TELEGRAM_BOT_TOKEN, ADMIN_TELEGRAM_ID, ADMIN_KEY
+./scripts/restart.sh
 ```
 
-Then open the bot chat in Telegram and tap **«Открыть приложение»** — the menu button is configured automatically. Add one source channel and the destination channel (the bot must be an administrator there), press **«Проверить подключение»**, then **«Запустить пересылку»**.
+Then either
+- open the bot chat in Telegram and tap **«Открыть приложение»**, or
+- open the printed HTTPS URL directly in a browser and enter your `ADMIN_KEY` on the login screen.
+
+Add up to five public source channels and the destination channel (the bot must be an administrator there), press **«Проверить подключение»**, then **«Запустить пересылку»**.

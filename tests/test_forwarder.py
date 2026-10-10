@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 
 from fastapi import HTTPException
 
-from app import auth, database, pin, telegram, worker
+from app import auth, database, main, pin, telegram, worker
 
 
 class ParserTests(unittest.TestCase):
@@ -293,6 +293,50 @@ class AuthTests(unittest.TestCase):
              patch("app.auth.time.time", return_value=2000000010):
             result = auth.validate_init_data(urlencode(values))
         self.assertEqual(result["id"], user["id"])
+
+    def test_accepts_valid_admin_key(self):
+        with patch.dict(os.environ, {"ADMIN_KEY": "4322", "ADMIN_TELEGRAM_ID": "8967870222"}):
+            result = auth.authenticate("", "4322")
+        self.assertEqual(result["auth_method"], "key")
+        self.assertEqual(result["id"], 8967870222)
+
+    def test_rejects_wrong_admin_key(self):
+        with patch.dict(os.environ, {"ADMIN_KEY": "4322", "ADMIN_TELEGRAM_ID": "8967870222"}):
+            with self.assertRaisesRegex(PermissionError, "пароль доступа"):
+                auth.authenticate("", "0000")
+
+    def test_empty_credentials_are_rejected(self):
+        with patch.dict(os.environ, {"ADMIN_KEY": "4322", "ADMIN_TELEGRAM_ID": "8967870222"}):
+            with self.assertRaisesRegex(PermissionError, "пароль доступа"):
+                auth.authenticate("", "")
+
+
+class AdminKeyLockoutTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.original_path = database.DATABASE_PATH
+        database.DATABASE_PATH = Path(self.tmp_dir.name) / "test.sqlite3"
+        database.initialize()
+
+    def tearDown(self):
+        database.DATABASE_PATH = self.original_path
+        self.tmp_dir.cleanup()
+
+    def test_lockout_after_five_failed_attempts(self):
+        with patch.dict(os.environ, {"ADMIN_KEY": "4322", "ADMIN_TELEGRAM_ID": "8967870222"}):
+            for _ in range(5):
+                with self.assertRaises(HTTPException) as ctx:
+                    main.require_admin("", "0000")
+                self.assertEqual(ctx.exception.status_code, 401)
+            with self.assertRaises(HTTPException) as ctx:
+                main.require_admin("", "0000")
+            self.assertEqual(ctx.exception.status_code, 429)
+            with self.assertRaises(HTTPException) as ctx:
+                main.require_admin("", "4322")
+            self.assertEqual(ctx.exception.status_code, 429)
+            database.set_state("key_locked_until", "0")
+            user = main.require_admin("", "4322")
+        self.assertEqual(user["auth_method"], "key")
 
 
 class DatabaseTests(unittest.TestCase):

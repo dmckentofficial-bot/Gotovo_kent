@@ -13,10 +13,36 @@
   <script defer src="/static/app.js"></script>
 </head>
 <body>
+  <canvas id="matrix" class="matrix" aria-hidden="true"></canvas>
+
   <div id="boot" class="boot">
     <div class="spinner" aria-hidden="true"></div>
     <p id="boot-text">Загрузка…</p>
   </div>
+
+  <section id="login-screen" class="pin-screen is-login" hidden>
+    <div class="pin-scrim" aria-hidden="true"></div>
+    <div class="pin-content">
+      <p class="pin-wordmark">KEN-T</p>
+      <p id="login-subtitle" class="pin-subtitle">Введите пароль доступа</p>
+      <div id="login-dots" class="pin-dots" aria-hidden="true"></div>
+      <p id="login-error" class="pin-error" role="alert" hidden></p>
+      <div id="login-pad" class="pin-pad">
+        <button class="pin-key" type="button" data-key="1">1</button>
+        <button class="pin-key" type="button" data-key="2">2</button>
+        <button class="pin-key" type="button" data-key="3">3</button>
+        <button class="pin-key" type="button" data-key="4">4</button>
+        <button class="pin-key" type="button" data-key="5">5</button>
+        <button class="pin-key" type="button" data-key="6">6</button>
+        <button class="pin-key" type="button" data-key="7">7</button>
+        <button class="pin-key" type="button" data-key="8">8</button>
+        <button class="pin-key" type="button" data-key="9">9</button>
+        <button class="pin-key pin-key-blank" type="button" tabindex="-1" aria-hidden="true"></button>
+        <button class="pin-key" type="button" data-key="0">0</button>
+        <button class="pin-key pin-key-action" type="button" data-key="back" aria-label="Удалить">⌫</button>
+      </div>
+    </div>
+  </section>
 
   <section id="pin-screen" class="pin-screen" hidden>
     <div class="pin-scrim" aria-hidden="true"></div>

@@ -42,3 +42,19 @@ def validate_init_data(init_data):
     if not hmac.compare_digest(user_id, admin_id):
         raise PermissionError("Доступ к приложению разрешён только владельцу бота.")
     return user
+
+
+def authenticate(init_data, admin_key=""):
+    """Доступ разрешён либо по данным Telegram, либо по паролю доступа (ADMIN_KEY)."""
+    expected = os.environ.get("ADMIN_KEY", "").strip()
+    if expected and admin_key and hmac.compare_digest(str(admin_key), expected):
+        admin_id = os.environ.get("ADMIN_TELEGRAM_ID", "").strip()
+        return {
+            "id": int(admin_id) if admin_id.isdigit() else admin_id,
+            "username": "admin",
+            "first_name": "Владелец",
+            "auth_method": "key",
+        }
+    if init_data:
+        return validate_init_data(init_data)
+    raise PermissionError("Введите пароль доступа или откройте приложение через Telegram.")

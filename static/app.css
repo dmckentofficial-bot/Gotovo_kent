@@ -72,6 +72,16 @@ h1, h2, h3, p { margin: 0; }
 }
 .hint { margin-top: 8px; color: var(--muted); font-size: 13px; }
 
+/* ---------- matrix background ---------- */
+.matrix {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  display: block;
+  background: #05080a;
+}
+.matrix[hidden] { display: none; }
+
 /* ---------- boot ---------- */
 .boot {
   position: fixed;
@@ -80,7 +90,7 @@ h1, h2, h3, p { margin: 0; }
   display: grid;
   place-items: center;
   gap: 16px;
-  background: var(--surface);
+  background: rgba(5, 8, 10, .55);
 }
 .boot[hidden] { display: none; }
 .boot p { color: var(--muted); font-size: 14px; }
@@ -174,6 +184,13 @@ h1, h2, h3, p { margin: 0; }
   text-decoration: underline;
 }
 .pin-cancel[hidden] { display: none; }
+
+/* Экран входа по паролю: прозрачный фон, сквозь него видна «матрица». */
+.pin-screen.is-login { background: rgba(5, 8, 10, .10); }
+.pin-screen.is-login .pin-scrim {
+  background: linear-gradient(180deg, rgba(5, 8, 10, .30) 0%, rgba(5, 8, 10, .72) 70%, rgba(5, 8, 10, .94) 100%);
+}
+.pin-screen.is-login .pin-wordmark { text-shadow: 0 0 24px rgba(0, 255, 120, .35); }
 
 /* ---------- app shell ---------- */
 .app { min-height: 100vh; padding-bottom: calc(84px + env(safe-area-inset-bottom)); }

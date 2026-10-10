@@ -48,12 +48,49 @@ class PinChangePayload(BaseModel):
     pin: str = Field(pattern=pin.PIN_PATTERN)
 
 
-def require_admin(x_telegram_init_data: str | None = Header(default=None)):
+def _key_fail_state():
+    count = int(database.get_state("key_fails", "0") or "0")
+    until = float(database.get_state("key_locked_until", "0") or "0")
+    return count, until
+
+
+def _key_locked():
+    _, until = _key_fail_state()
+    return time.time() < until
+
+
+def _register_key_fail():
+    count, _ = _key_fail_state()
+    count += 1
+    if count >= 5:
+        database.set_state("key_fails", "0")
+        database.set_state("key_locked_until", int(time.time()) + 60)
+    else:
+        database.set_state("key_fails", str(count))
+
+
+def require_admin(
+    x_telegram_init_data: str | None = Header(default=None),
+    x_admin_key: str | None = Header(default=None),
+):
+    key = (x_admin_key or "").strip()
+    if key and _key_locked():
+        _, until = _key_fail_state()
+        wait = max(0, int(until - time.time()))
+        raise HTTPException(status_code=429, detail=f"Слишком много неверных попыток. Подождите {wait} с.")
     try:
-        return auth.validate_init_data(x_telegram_init_data or "")
+        user = auth.authenticate(x_telegram_init_data or "", key)
     except PermissionError as exc:
+        if key:
+            _register_key_fail()
         logger.warning("Авторизация отклонена: %s", exc)
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=401, detail=str(exc), headers={"X-Requires-Auth": "1"}
+        ) from exc
+    if key:
+        database.set_state("key_fails", "0")
+        database.set_state("key_locked_until", "0")
+    return user
 
 
 def _pin_gate():

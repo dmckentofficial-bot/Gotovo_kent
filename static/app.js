@@ -9,6 +9,13 @@
     boot: $("#boot"),
     bootText: $("#boot-text"),
     app: $("#app"),
+    matrix: $("#matrix"),
+    // login gate (пароль доступа)
+    loginScreen: $("#login-screen"),
+    loginSubtitle: $("#login-subtitle"),
+    loginDots: $("#login-dots"),
+    loginError: $("#login-error"),
+    loginPad: $("#login-pad"),
     // dashboard
     badge: $("#service-badge"),
     toggle: $("#toggle-service"),
@@ -59,6 +66,10 @@
   let config = { sources: [], destination: "", filter_enabled: false, filter_terms: "", filter_mode: "any", signature_enabled: false, signature_text: "" };
   let pinConfigured = false;
   let pinUnlocked = false;
+
+  const ADMIN_KEY_STORAGE = "fwd_admin_key";
+  let adminKey = "";
+  try { adminKey = localStorage.getItem(ADMIN_KEY_STORAGE) || ""; } catch (_) {}
 
   const AUTO_REFRESH_MS = 15000;
   const MAX_SOURCES = 5;
@@ -221,11 +232,21 @@
       headers: {
         "Content-Type": "application/json",
         "X-Telegram-Init-Data": initData,
+        "X-Admin-Key": adminKey,
         ...(options.headers || {}),
       },
     });
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.detail || `Ошибка сервера: ${response.status}`);
+    if (!response.ok) {
+      const detail = body.detail || `Ошибка сервера: ${response.status}`;
+      if (response.status === 401 && !initData && response.headers.get("X-Requires-Auth") === "1") {
+        adminKey = "";
+        try { localStorage.removeItem(ADMIN_KEY_STORAGE); } catch (_) {}
+        if (nodes.loginScreen.hidden) showLogin();
+        throw new Error("Нужен вход по паролю доступа.");
+      }
+      throw new Error(detail);
+    }
     return body;
   }
 
@@ -538,6 +559,149 @@
     if (event.target === nodes.confirm) { nodes.confirm.hidden = true; nodes.confirm._resolve?.(false); }
   });
 
+  /* ---------- matrix animation ---------- */
+  const matrixFx = (() => {
+    const canvas = nodes.matrix;
+    if (!canvas) return { start() {}, stop() {}, hide() {} };
+    const ctx = canvas.getContext("2d");
+    const GLYPHS = "アイウエオカキクケコサシスセソタチツテトナニヌネノ0123456789ABCDEFXYZ@#$%&*+".split("");
+    let raf = 0;
+    let fontSize = 16;
+    let drops = [];
+    let running = false;
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.floor(window.innerWidth * dpr);
+      canvas.height = Math.floor(window.innerHeight * dpr);
+      fontSize = Math.max(12, Math.floor((window.innerWidth < 600 ? 14 : 16) * dpr));
+      const columns = Math.ceil(canvas.width / fontSize);
+      drops = Array.from({ length: columns }, () => Math.floor(Math.random() * -60));
+    }
+
+    function frame() {
+      ctx.fillStyle = "rgba(4, 7, 9, 0.09)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#35e07f";
+      ctx.textBaseline = "top";
+      ctx.font = `${fontSize}px monospace`;
+      for (let i = 0; i < drops.length; i += 1) {
+        const glyph = GLYPHS[Math.floor(Math.random() * GLYPHS.length)];
+        ctx.fillText(glyph, i * fontSize, drops[i] * fontSize);
+        if (drops[i] * fontSize > canvas.height && Math.random() > 0.972) drops[i] = 0;
+        drops[i] += 1;
+      }
+      raf = requestAnimationFrame(frame);
+    }
+
+    return {
+      start() {
+        if (canvas.hidden) canvas.hidden = false;
+        if (running) return;
+        running = true;
+        window.addEventListener("resize", resize);
+        resize();
+        frame();
+      },
+      stop() {
+        running = false;
+        cancelAnimationFrame(raf);
+        window.removeEventListener("resize", resize);
+      },
+      hide() {
+        running = false;
+        cancelAnimationFrame(raf);
+        canvas.hidden = true;
+        window.removeEventListener("resize", resize);
+      },
+    };
+  })();
+
+  /* ---------- вход по паролю доступа ---------- */
+  const loginGate = (() => {
+    let buffer = "";
+
+    function renderDots() {
+      nodes.loginDots.replaceChildren();
+      for (let i = 0; i < PIN_DIGITS; i += 1) {
+        const dot = document.createElement("span");
+        if (i < buffer.length) dot.className = "filled";
+        nodes.loginDots.append(dot);
+      }
+    }
+
+    function setError(text) {
+      nodes.loginError.textContent = text || "";
+      nodes.loginError.hidden = !text;
+      if (text) {
+        nodes.loginDots.classList.remove("shake");
+        void nodes.loginDots.offsetWidth;
+        nodes.loginDots.classList.add("shake");
+      }
+    }
+
+    function reset() { buffer = ""; renderDots(); }
+
+    function show() {
+      buffer = "";
+      setError("");
+      nodes.loginSubtitle.textContent = "Введите пароль доступа";
+      renderDots();
+      nodes.loginScreen.hidden = false;
+      matrixFx.start();
+    }
+
+    function hide() {
+      nodes.loginScreen.hidden = true;
+      matrixFx.hide();
+    }
+
+    async function attempt(code) {
+      adminKey = code;
+      try { localStorage.setItem(ADMIN_KEY_STORAGE, code); } catch (_) {}
+      try {
+        await api("/api/pin/status");
+      } catch (error) {
+        adminKey = "";
+        try { localStorage.removeItem(ADMIN_KEY_STORAGE); } catch (_) {}
+        setError(error.message === "Нужен вход по паролю доступа." ? "Неверный пароль" : (error.message || "Не удалось войти."));
+        nodes.loginSubtitle.textContent = "Введите пароль доступа";
+        haptic("heavy");
+        reset();
+        return false;
+      }
+      hide();
+      hapticResult("success");
+      return true;
+    }
+
+    function press(key) {
+      if (key === "back") { buffer = buffer.slice(0, -1); renderDots(); return; }
+      if (!/^\d$/.test(key) || buffer.length >= PIN_DIGITS) return;
+      haptic("light");
+      buffer += key;
+      renderDots();
+      if (buffer.length === PIN_DIGITS) {
+        const code = buffer;
+        reset();
+        setTimeout(async () => {
+          if (await attempt(code)) start();
+        }, 150);
+      }
+    }
+
+    nodes.loginPad.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-key]");
+      if (button) press(button.dataset.key);
+    });
+
+    return { show, hide };
+  })();
+
+  function showLogin() { loginGate.show(); }
+
+  matrixFx.start();
+
   /* ---------- PIN gate ---------- */
   const pinGate = (() => {
     let mode = "unlock";
@@ -831,28 +995,29 @@
   });
 
   setInterval(() => {
-    if (!initData || !pinUnlocked) return;
+    if ((!initData && !adminKey) || !pinUnlocked) return;
     refreshStatus().catch(() => {});
   }, AUTO_REFRESH_MS);
 
   async function start() {
-    if (!initData) {
+    if (isDemo) showNotice("Демо-режим: данные имитированы локально, ничего никуда не пересылается.");
+    if (!initData && !adminKey) {
       nodes.boot.hidden = true;
-      nodes.app.hidden = false;
-      showNotice("Откройте Mini App через кнопку в чате с вашим Telegram-ботом.", "error");
+      showLogin();
       return;
     }
-    if (isDemo) showNotice("Демо-режим: данные имитированы локально, ничего никуда не пересылается.");
+    const byPassword = !initData && Boolean(adminKey);
     try {
       const pinStatus = await api("/api/pin/status");
       pinConfigured = Boolean(pinStatus.enabled);
-      if (pinConfigured) {
+      if (pinConfigured && !byPassword) {
         nodes.boot.hidden = true;
         const ok = await pinGate.open("unlock", true);
         if (!ok) return;
       }
       pinUnlocked = true;
       nodes.app.hidden = false;
+      if (byPassword) hapticResult("success");
       await loadConfig();
       refreshPinSecurity().catch(() => {});
       await refreshStatus();
@@ -861,6 +1026,7 @@
       showNotice(error.message, "error");
     } finally {
       nodes.boot.hidden = true;
+      matrixFx.hide();
     }
   }
 
