@@ -1797,6 +1797,32 @@ class BotCommandsTests(unittest.TestCase):
         self.assertIn("@a", text)
         self.assertIn("@b", text)
 
+    def test_members_pagination_never_goes_negative(self):
+        members = [{"status": "member", "user": {"first_name": "A", "username": "a", "id": 1}}]
+
+        def fake_bot(method, data=None, files=None, timeout=30):
+            return members
+
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "bot_request", side_effect=fake_bot), \
+             patch.object(worker, "_owner_guard", return_value=""):
+            _, markup = worker._members_message("@chat", 2, "owner")
+        back = markup["inline_keyboard"][0][0]
+        self.assertEqual(back["callback_data"], "adm:m:0")
+
+    def test_members_header_uses_chat_not_first_member(self):
+        members = [{"status": "member", "user": {"first_name": "A", "username": "a", "id": 1}}]
+
+        def fake_bot(method, data=None, files=None, timeout=30):
+            return members
+
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "bot_request", side_effect=fake_bot), \
+             patch.object(worker, "_owner_guard", return_value=""):
+            text, _ = worker._members_message("@my_chat", 0, "owner")
+        self.assertIn("@my_chat", text.splitlines()[0])
+        self.assertNotIn("a", text.splitlines()[0].replace("@my_chat", ""))
+
     def test_members_button_is_only_in_owner_keyboard(self):
         with patch.object(database, "get_config", return_value={"enabled": True, "sources": []}), \
              patch.object(worker, "_is_owner_key", side_effect=lambda key: key == "owner"):

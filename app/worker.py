@@ -497,14 +497,15 @@ def _members_message(chat, offset, user_key=None):
     if not isinstance(members, list) or not members:
         return "Участники не найдены. Проверьте, что бот — администратор чата.", None
 
-    title = members[0].get("user", {}).get("username") or chat
-    lines = [f"Участники «{title}» — с {offset}:", ""]
+    # Заголовок — сам чат: первый участник не равен названию.
+    lines = [f"Участники {chat} — показано с {offset}:", ""]
     lines.extend(_member_line(entry) for entry in members)
 
     keyboard = []
     nav = []
     if offset > 0:
-        nav.append({"text": "⬅️ Назад", "callback_data": f"adm:m:{offset - MEMBERS_PAGE_SIZE}"})
+        previous = max(offset - MEMBERS_PAGE_SIZE, 0)
+        nav.append({"text": "⬅️ Назад", "callback_data": f"adm:m:{previous}"})
     nav.append({"text": f"Ещё {offset + len(members)} ➡️", "callback_data": f"adm:m:{offset + MEMBERS_PAGE_SIZE}"})
     keyboard.append(nav)
     return "\n".join(lines), {"inline_keyboard": keyboard}
