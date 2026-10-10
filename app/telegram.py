@@ -454,26 +454,6 @@ def forward_message(chat_id, from_chat_id, message_id, signature=""):
     return True
 
 
-def _needs_upload_fallback(description):
-    """Ошибки, при которых серверная копия невозможна, но перезаливка сработает."""
-    lowered = (description or "").lower()
-    return any(
-        marker in lowered
-        for marker in (
-            "message to copy not found",
-            "message to forward not found",
-            "message_id_invalid",
-            "message not found",
-            "message can't be copied",
-            "message can't be forwarded",
-            "bot is not a member",
-            "bot was blocked",
-            "forbidden",
-            "chat not found",
-        )
-    )
-
-
 def publish_post(post, destination, signature=""):
     """Пересылает пост в полном объёме (текст + все медиа).
 
@@ -494,11 +474,11 @@ def publish_post(post, destination, signature=""):
     if source_username and message_id:
         try:
             return forward_message(destination, f"@{source_username}", message_id, signature)
-        except RuntimeError as exc:
-            # Копия невозможна (бота нет в источнике и т.п.) — пробуем перезаливку,
-            # если есть что перезаливать. Иначе пробрасываем понятную ошибку.
-            if not _needs_upload_fallback(str(exc)):
-                raise
+        except RuntimeError as copy_exc:
+            # Копия не удалась — всегда пробуем полную перезаливку, если есть
+            # что перезаливать (текст/медиа уже есть в snippet, а полный текст
+            # догружаем со страницы отдельного поста). Ошибки назначения
+            # (нет прав, чат не найден) всплывут и из перезаливки тоже.
             enriched = dict(post)
             try:
                 full = fetch_single_post(source_username.lstrip("@"), int(message_id))
@@ -509,7 +489,7 @@ def publish_post(post, destination, signature=""):
             except (RuntimeError, ValueError):
                 pass
             if not enriched.get("text", "").strip() and not enriched.get("media"):
-                raise
+                raise copy_exc from None
             post = enriched
 
     # Перезаливка в полном объёме (fallback и ручной вызов без привязки).
