@@ -311,6 +311,7 @@ h1, h2, h3, p { margin: 0; }
 .mini-save:active { transform: scale(.98); }
 .mini-save:hover { filter: brightness(1.08); }
 .mini-save:disabled { opacity: .6; cursor: wait; }
+.qr-image { display: block; margin: 10px auto; border-radius: var(--radius-md); background: #fff; padding: 8px; }
 .chip {
   display: inline-flex;
   align-items: baseline;

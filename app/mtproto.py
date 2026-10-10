@@ -40,8 +40,10 @@ MAX_FILE_BYTES = 49 * 1024 * 1024
 # для разработчиков). Если my.telegram.org недоступен — их достаточно, чтобы
 # войти со СВОЕГО номера и читать СВОИ каналы: данные сессии всё равно ваши.
 # Минус: общие ключи иногда упираются в лимиты — тогда заведите личные.
-TEST_API_ID = "94575"
-TEST_API_HASH = "a3406de8d171bb422bb6ddd78cc7bbbc0"
+# Встроенные ключи официального Android-клиента (публичны в open-source):
+# работают без my.telegram.org, вход — по QR-коду из приложения Telegram.
+TEST_API_ID = "6"
+TEST_API_HASH = "eb06d4abfb49dc3eeb1aeb98ae0f581e"
 
 
 # ---------- собственный поток с event loop (Telethon нельзя дёргать из чужих потоков) ----------
@@ -93,14 +95,92 @@ def is_configured():
 
 
 def fill_test_keys():
-    """Подставляет публичные тестовые ключи (без my.telegram.org).
+    """Подставляет встроенные ключи (без my.telegram.org).
 
-    Возвращает подсказку для интерфейса. Телефон пользователь всё равно
-    вводит свой, код приходит на его номер, сессия — его.
+    Дальше вход — по QR-коду из приложения Telegram (Настройки → Устройства →
+    Привязать устройство). Номер телефона для QR-входа не нужен: аккаунт
+    определяется тем, кто отсканировал.
     """
     database.set_state("mt_api_id", TEST_API_ID)
     database.set_state("mt_api_hash", TEST_API_HASH)
     return {"api_id": TEST_API_ID, "api_hash_hint": f"…{TEST_API_HASH[-4:]}"}
+
+
+_qr_login = None
+
+
+async def _start_qr():
+    """Начинает QR-вход: возвращает ссылку для QR-картинки."""
+    global _client, _qr_login
+    database.set_state("mt_api_id", database.get_state("mt_api_id", "").strip() or TEST_API_ID)
+    database.set_state("mt_api_hash", database.get_state("mt_api_hash", "").strip() or TEST_API_HASH)
+    if _client is not None:
+        try:
+            await _client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        _client = None
+    creds = get_credentials()
+    session = StringSession(database.get_state("mt_session", "") or None)
+    _client = TelegramClient(session, int(creds["api_id"]), creds["api_hash"])
+    await _client.connect()
+    if await _client.is_user_authorized():
+        _save_session(_client)
+        return {"authorized": True}
+    _qr_login = await _client.qr_login()
+    return {"authorized": False, "qr": True}
+
+
+async def _qr_status():
+    """Проверяет, отсканирован ли QR (короткое ожидание для polling из UI)."""
+    global _qr_login
+    if _qr_login is None:
+        return {"authorized": False, "waiting": False}
+    try:
+        user = await _qr_login.wait(timeout=20)
+    except Exception:  # noqa: BLE001 - таймаут/истечение QR
+        user = None
+    if user:
+        _save_session(_client)
+        _qr_login = None
+        me = await _client.get_me()
+        return {"authorized": True, "user": getattr(me, "username", "") or getattr(me, "first_name", "")}
+    return {"authorized": False, "waiting": True}
+
+
+def _qr_png_bytes(url):
+    import io
+
+    import qrcode
+
+    qr = qrcode.QRCode(border=2)
+    qr.add_data(url)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color="black", back_color="white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+async def _qr_png():
+    if _qr_login is None:
+        raise RuntimeError("Сначала нажмите «Войти по QR-коду».")
+    return _qr_png_bytes(_qr_login.url)
+
+
+def start_qr():
+    return _run(lambda: _start_qr(), timeout=60)
+
+
+def qr_status():
+    try:
+        return _run(lambda: _qr_status(), timeout=40)
+    except Exception as exc:  # noqa: BLE001
+        return {"authorized": False, "waiting": True, "error": str(exc)}
+
+
+def qr_png():
+    return _run(lambda: _qr_png(), timeout=30)
 
 
 async def _get_client():

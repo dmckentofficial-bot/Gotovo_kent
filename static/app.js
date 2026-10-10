@@ -58,6 +58,10 @@
     mtConfirm: $("#mt-confirm"),
     mtSubmitPassword: $("#mt-submit-password"),
     mtTestkeys: $("#mt-testkeys"),
+    mtQrStart: $("#mt-qr-start"),
+    mtQrBlock: $("#mt-qr-block"),
+    mtQrImage: $("#mt-qr-image"),
+    mtQrHint: $("#mt-qr-hint"),
     save: $("#save"),
     test: $("#test"),
     // signature
@@ -1030,9 +1034,51 @@
       nodes.mtApiId.value = result.api_id || "";
       nodes.mtApiHash.value = "";
       nodes.mtApiHash.placeholder = `общий ключ ${result.api_hash_hint || ""}`;
-      showNotice("Подставлены общие тестовые ключи. Введите свой номер и нажмите «Получить код».", "success");
+      showNotice("Подставлены встроенные ключи. Теперь нажмите «Войти по QR-коду».", "success");
     } catch (error) {
       showNotice(error.message, "error");
+    }
+  });
+
+  let mtQrPolling = false;
+
+  async function mtQrPoll() {
+    if (mtQrPolling) return;
+    mtQrPolling = true;
+    try {
+      for (;;) {
+        let info = null;
+        try { info = await api("/api/mt/qr/status"); } catch (_) { break; }
+        if (!info || info.authorized) {
+          nodes.mtQrBlock.hidden = true;
+          showNotice("Точное чтение включено.", "success");
+          await refreshMtStatus();
+          break;
+        }
+        if (!info.waiting) break;
+      }
+    } finally {
+      mtQrPolling = false;
+    }
+  }
+
+  nodes.mtQrStart.addEventListener("click", async (event) => {
+    setBusy(event.currentTarget, true);
+    try {
+      const result = await api("/api/mt/qr/start", { method: "POST" });
+      if (result.authorized) {
+        showNotice("MTProto уже подключён.", "success");
+        await refreshMtStatus();
+        return;
+      }
+      nodes.mtQrImage.src = `/api/mt/qr/image?t=${Date.now()}`;
+      nodes.mtQrBlock.hidden = false;
+      if (nodes.mtQrHint) nodes.mtQrHint.textContent = "Откройте Telegram → Настройки → Устройства → Привязать устройство и наведите камеру.";
+      mtQrPoll();
+    } catch (error) {
+      showNotice(error.message, "error");
+    } finally {
+      setBusy(event.currentTarget, false);
     }
   });
 

@@ -275,6 +275,30 @@ def mt_testkeys(_user=Depends(require_admin)):
     return mtproto.fill_test_keys()
 
 
+@app.post("/api/mt/qr/start")
+def mt_qr_start(_user=Depends(require_admin)):
+    try:
+        return mtproto.start_qr()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/mt/qr/image")
+def mt_qr_image(_user=Depends(require_admin)):
+    from fastapi.responses import Response
+
+    try:
+        png = mtproto.qr_png()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(content=png, media_type="image/png")
+
+
+@app.get("/api/mt/qr/status")
+def mt_qr_status(_user=Depends(require_admin)):
+    return mtproto.qr_status()
+
+
 @app.put("/api/bot")
 def put_bot(payload: BotPayload, _user=Depends(require_admin)):
     new_token = payload.token.strip()

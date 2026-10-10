@@ -190,9 +190,15 @@
             <input id="mt-api-id" class="text-input" type="text" inputmode="numeric" autocomplete="off" placeholder="123456">
             <label class="field-label" for="mt-api-hash">API Hash</label>
             <input id="mt-api-hash" class="text-input" type="text" autocomplete="off" spellcheck="false" placeholder="…">
-            <p class="hint">Нет доступа к my.telegram.org? Нажмите «Тестовые ключи» — подставятся общие ключи, дальше нужны только ваш номер и код из Telegram.</p>
+            <p class="hint">Нет доступа к my.telegram.org? Нажмите «Встроенные ключи», затем «Войти по QR-коду» и отсканируйте код из приложения Telegram (Настройки → Устройства → Привязать устройство).</p>
             <div class="button-row">
-              <button id="mt-testkeys" class="button secondary" type="button">Тестовые ключи</button>
+              <button id="mt-testkeys" class="button secondary" type="button">Встроенные ключи</button>
+              <button id="mt-qr-start" class="button primary" type="button">Войти по QR-коду</button>
+            </div>
+            <div id="mt-qr-block" hidden>
+              <p class="field-label">Отсканируйте камерой Telegram</p>
+              <img id="mt-qr-image" class="qr-image" alt="QR-код для входа" width="220" height="220">
+              <p class="hint" id="mt-qr-hint">Ждём сканирования…</p>
             </div>
             <div id="mt-code-block" hidden>
               <label class="field-label" for="mt-code">Код из Telegram</label>
