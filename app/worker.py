@@ -91,14 +91,14 @@ def drain_direct_messages():
         message_id = message.get("message_id")
         if chat.get("type") != "private" or not message_id:
             continue
-        if owner_id is not None and sender.get("id") != owner_id:
-            continue
         text = message.get("text", "")
         if text.startswith("/start"):
             _answer_private(chat.get("id"), HELP_TEXT)
             continue
         if text.startswith("/id"):
             _answer_private(chat.get("id"), f"Ваш Telegram ID: {sender.get('id')}")
+            continue
+        if owner_id is not None and sender.get("id") != owner_id:
             continue
         preview = {
             "id": str(message_id),

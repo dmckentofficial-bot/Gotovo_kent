@@ -818,6 +818,33 @@ class DirectTests(unittest.TestCase):
         self.assertEqual(database.recent_history(), [])
         self.assertEqual(database.get_state("bot_updates_offset"), "101")
 
+    def test_stranger_can_ask_id_but_not_forward(self):
+        from app import database, telegram, worker
+
+        who = {
+            "message_id": 8, "text": "/id",
+            "chat": {"id": 999, "type": "private"}, "from": {"id": 999},
+        }
+        spam = {
+            "message_id": 9, "text": "Спам",
+            "chat": {"id": 999, "type": "private"}, "from": {"id": 999},
+        }
+        sent = []
+
+        def fake_bot(method, data=None, files=None, timeout=30):
+            if method == "getUpdates":
+                return self._updates([who, spam])
+            sent.append(method)
+            return {"message_id": 1}
+
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "bot_request", side_effect=fake_bot):
+            worker.drain_direct_messages()
+
+        self.assertIn("sendMessage", sent)
+        self.assertNotIn("copyMessage", sent)
+        self.assertEqual(database.recent_history(), [])
+
     def test_start_command_answers_with_help(self):
         from app import telegram, worker
 
