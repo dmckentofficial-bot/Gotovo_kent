@@ -128,7 +128,9 @@ def configure_menu_button(app_url, admin_id=None):
         "text": "Открыть приложение",
         "web_app": {"url": app_url.rstrip("/") + "/"},
     }
-    targets = [admin_id] if admin_id else [None]
+    targets = [None]
+    if admin_id is not None:
+        targets.append(admin_id)
     for chat_id in targets:
         data = {"menu_button": json.dumps(menu_button)}
         if chat_id is not None:

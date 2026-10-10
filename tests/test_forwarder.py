@@ -417,9 +417,27 @@ class MenuButtonTests(unittest.TestCase):
              patch("app.telegram.requests.post", return_value=self.Response()) as send:
             worker.configure_menu_button("https://example.com", None)
 
-        data = send.call_args.kwargs["data"]
+        calls = send.call_args_list
+        self.assertEqual(len(calls), 1)
+        data = calls[0].kwargs["data"]
         self.assertNotIn("chat_id", data)
         self.assertIsInstance(data["menu_button"], str)
+
+    def test_menu_button_updates_default_and_admin_chat(self):
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch("app.telegram.requests.post", return_value=self.Response()) as send:
+            worker.configure_menu_button("https://example.com", 555)
+
+        calls = send.call_args_list
+        self.assertEqual(len(calls), 2)
+        by_chat = {}
+        for call in calls:
+            data = call.kwargs["data"]
+            by_chat[data.get("chat_id")] = data
+        self.assertIn(None, by_chat)   # кнопка по умолчанию
+        self.assertIn(555, by_chat)    # кнопка в чате владельца
+        menu = json.loads(by_chat[None]["menu_button"])
+        self.assertEqual(menu["web_app"]["url"], "https://example.com/")
 
 
 if __name__ == "__main__":
