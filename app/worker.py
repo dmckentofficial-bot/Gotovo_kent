@@ -186,10 +186,13 @@ def _cmd_status():
     config = database.get_config()
     state = "включена" if config.get("enabled") else "выключена"
     last_error = database.get_state("last_error", "")
+    destinations = list(config.get("destinations") or [])
+    if not destinations and config.get("destination"):
+        destinations = [config["destination"]]
     lines = [
         f"Пересылка: {state}.",
         f"Источников: {len(config.get('sources', []))}.",
-        f"Назначение: {config.get('destination') or 'не задано'}.",
+        f"Мои каналы: {', '.join(destinations) if destinations else 'не заданы'}.",
     ]
     if last_error:
         lines.append(f"Ошибка: {last_error}")
