@@ -109,8 +109,10 @@ def _answer_private(chat_id, text, keyboard=False):
             if markup:
                 payload["reply_markup"] = json.dumps(markup)
         telegram.bot_request("sendMessage", payload, timeout=30)
-    except RuntimeError:
-        pass
+        database.set_state("bot_answers_sent", str(int(database.get_state("bot_answers_sent", "0") or 0) + 1))
+    except RuntimeError as exc:
+        # Ответы не должны умирать молча: иначе кнопки «не работают» без причин.
+        database.set_state("bot_answer_error", str(exc)[:300])
 
 
 def _pending_key():
@@ -348,74 +350,82 @@ def drain_direct_messages():
         except (TypeError, ValueError):
             continue
         database.set_state("bot_updates_offset", update_id + 1)
-        message = update.get("message") or {}
-        chat = message.get("chat") or {}
-        sender = message.get("from") or {}
-        message_id = message.get("message_id")
-        if chat.get("type") != "private" or not message_id:
-            continue
-        text = message.get("text", "")
-        if text.startswith("/start"):
+        try:
+            _handle_private_update(update, owner_id, destination)
+        except Exception as exc:
+            # Одно битое обновление не должно ронять весь приёмник.
+            database.set_state("bot_answer_error", f"update {update_id}: {type(exc).__name__}: {exc}"[:300])
+
+
+def _handle_private_update(update, owner_id, destination):
+    message = update.get("message") or {}
+    chat = message.get("chat") or {}
+    sender = message.get("from") or {}
+    message_id = message.get("message_id")
+    if chat.get("type") != "private" or not message_id:
+        return
+    text = message.get("text", "")
+    if text.startswith("/start"):
+        _answer_private(chat.get("id"), HELP_TEXT, keyboard="main")
+        return
+    if text.startswith("/id"):
+        _answer_private(chat.get("id"), f"Ваш Telegram ID: {sender.get('id')}")
+        return
+    if owner_id is not None and sender.get("id") != owner_id:
+        return
+    if text in (BTN_RUN, BTN_STOP, BTN_STATUS, BTN_STATS, BTN_LIST, BTN_TEST, BTN_HELP, BTN_ADD, BTN_DEL, BTN_DEST):
+        _clear_pending()
+        if text == BTN_RUN:
+            _answer_private(chat.get("id"), _cmd_set_enabled(True), keyboard="main")
+        elif text == BTN_STOP:
+            _answer_private(chat.get("id"), _cmd_set_enabled(False), keyboard="main")
+        elif text == BTN_STATUS:
+            _answer_private(chat.get("id"), _cmd_status(), keyboard="main")
+        elif text == BTN_STATS:
+            _answer_private(chat.get("id"), _cmd_stats(), keyboard="main")
+        elif text == BTN_LIST:
+            _answer_private(chat.get("id"), _cmd_list(), keyboard="main")
+        elif text == BTN_TEST:
+            _answer_private(chat.get("id"), _cmd_test(), keyboard="main")
+        elif text == BTN_HELP:
             _answer_private(chat.get("id"), HELP_TEXT, keyboard="main")
-            continue
-        if text.startswith("/id"):
-            _answer_private(chat.get("id"), f"Ваш Telegram ID: {sender.get('id')}")
-            continue
-        if owner_id is not None and sender.get("id") != owner_id:
-            continue
-        if text in (BTN_RUN, BTN_STOP, BTN_STATUS, BTN_STATS, BTN_LIST, BTN_TEST, BTN_HELP, BTN_ADD, BTN_DEL, BTN_DEST):
-            _clear_pending()
-            if text == BTN_RUN:
-                _answer_private(chat.get("id"), _cmd_set_enabled(True), keyboard="main")
-            elif text == BTN_STOP:
-                _answer_private(chat.get("id"), _cmd_set_enabled(False), keyboard="main")
-            elif text == BTN_STATUS:
-                _answer_private(chat.get("id"), _cmd_status(), keyboard="main")
-            elif text == BTN_STATS:
-                _answer_private(chat.get("id"), _cmd_stats(), keyboard="main")
-            elif text == BTN_LIST:
-                _answer_private(chat.get("id"), _cmd_list(), keyboard="main")
-            elif text == BTN_TEST:
-                _answer_private(chat.get("id"), _cmd_test(), keyboard="main")
-            elif text == BTN_HELP:
-                _answer_private(chat.get("id"), HELP_TEXT, keyboard="main")
-            else:
-                action = {"➕ Добавить": "add", "➖ Убрать": "del"}.get(text, "dest")
-                _set_pending(chat.get("id"), action)
-                _answer_private(chat.get("id"), PENDING_ASK[action], keyboard="main")
-            continue
-        if text.startswith("/"):
-            _clear_pending()
-            answer = _handle_owner_command(text)
-            if answer:
-                _answer_private(chat.get("id"), answer, keyboard="main")
-            continue
-        pending_action = _take_pending(chat.get("id"))
-        if pending_action:
-            _answer_private(chat.get("id"), _consume_pending(pending_action, text), keyboard="main")
-            continue
-        preview = {
-            "id": str(message_id),
-            "text": text or message.get("caption", ""),
-            "media": [{"type": kind} for kind in _direct_media_label(message)],
-        }
+        else:
+            action = {"➕ Добавить": "add", "➖ Убрать": "del"}.get(text, "dest")
+            _set_pending(chat.get("id"), action)
+            _answer_private(chat.get("id"), PENDING_ASK[action], keyboard="main")
+        return
+    if text.startswith("/"):
+        _clear_pending()
+        answer = _handle_owner_command(text)
+        if answer:
+            _answer_private(chat.get("id"), answer, keyboard="main")
+        return
+    pending_action = _take_pending(chat.get("id"))
+    if pending_action:
+        _answer_private(chat.get("id"), _consume_pending(pending_action, text), keyboard="main")
+        return
+    preview = {
+        "id": str(message_id),
+        "text": text or message.get("caption", ""),
+        "media": [{"type": kind} for kind in _direct_media_label(message)],
+    }
+    try:
+        telegram.bot_request(
+            "copyMessage",
+            {"chat_id": destination, "from_chat_id": chat.get("id"), "message_id": message_id},
+            timeout=30,
+        )
+        database.write_history(preview, DIRECT_SOURCE, "forwarded")
+    except RuntimeError:
         try:
             telegram.bot_request(
-                "copyMessage",
+                "forwardMessage",
                 {"chat_id": destination, "from_chat_id": chat.get("id"), "message_id": message_id},
                 timeout=30,
             )
-            database.write_history(preview, DIRECT_SOURCE, "forwarded")
-        except RuntimeError:
-            try:
-                telegram.bot_request(
-                    "forwardMessage",
-                    {"chat_id": destination, "from_chat_id": chat.get("id"), "message_id": message_id},
-                    timeout=30,
-                )
-                database.write_history(preview, DIRECT_SOURCE, "forwarded", "Скопировать не вышло — переслано с меткой.")
-            except RuntimeError as exc:
-                database.write_history(preview, DIRECT_SOURCE, "error", str(exc))
+            database.write_history(preview, DIRECT_SOURCE, "forwarded", "Скопировать не вышло — переслано с меткой.")
+        except RuntimeError as exc:
+            database.write_history(preview, DIRECT_SOURCE, "error", str(exc))
 
 
 def run(stop_event):
