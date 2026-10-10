@@ -9,6 +9,8 @@ from . import telegram
 
 
 POLL_SECONDS = 60
+DIRECT_TICK_SECONDS = 10
+POLL_EVERY_N_TICKS = 6
 DIRECT_SOURCE = "direct"
 
 HELP_TEXT = (
@@ -64,7 +66,7 @@ def drain_direct_messages():
         return
     owner_id = _owner_id()
 
-    params = {"timeout": 20, "allowed_updates": json.dumps(["message"])}
+    params = {"timeout": 10, "allowed_updates": json.dumps(["message"])}
     try:
         offset = int(database.get_state("bot_updates_offset", "") or 0)
     except ValueError:
@@ -72,7 +74,7 @@ def drain_direct_messages():
     if offset:
         params["offset"] = offset
     try:
-        updates = telegram.bot_request("getUpdates", params, timeout=45)
+        updates = telegram.bot_request("getUpdates", params, timeout=25)
     except RuntimeError:
         return
     if not isinstance(updates, list):
@@ -123,16 +125,21 @@ def drain_direct_messages():
 
 
 def run(stop_event):
+    # Приёмник лички опрашивается каждые ~10 секунд (почти мгновенно),
+    # тяжёлый опрос источников — раз в минуту, как раньше.
+    tick = 0
     while not stop_event.is_set():
-        try:
-            poll_once()
-        except Exception as exc:
-            database.set_state("last_error", f"Ошибка цикла пересылки ({type(exc).__name__}).")
+        if tick % POLL_EVERY_N_TICKS == 0:
+            try:
+                poll_once()
+            except Exception as exc:
+                database.set_state("last_error", f"Ошибка цикла пересылки ({type(exc).__name__}).")
         try:
             drain_direct_messages()
         except Exception as exc:
             database.set_state("last_error", f"Ошибка приёма сообщений ({type(exc).__name__}).")
-        stop_event.wait(POLL_SECONDS)
+        tick += 1
+        stop_event.wait(DIRECT_TICK_SECONDS)
 
 
 def _matches_filter(text, config):
