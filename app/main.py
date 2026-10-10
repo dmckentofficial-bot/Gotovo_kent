@@ -265,18 +265,9 @@ async def lifespan(_app):
             # (заодно не будим 429 на каждом рестарте)
             menu_url = database.get_state("menu_url", "")
             if menu_url != app_url.rstrip("/"):
-                # Кнопка по умолчанию обязательна; личная кнопка владельца —
-                # best-effort (ID может принадлежать удалённому аккаунту).
+                # Только общая кнопка: лишние вызовы роняют флуд-лимит.
+                # (заодно не будим 429 на каждом рестарте)
                 worker.configure_menu_button(app_url, None)
-                try:
-                    admin_chat = int(admin_id)
-                except ValueError:
-                    admin_chat = None
-                if admin_chat is not None:
-                    try:
-                        worker.configure_menu_button(app_url, admin_chat)
-                    except RuntimeError as exc:
-                        logger.warning("Личная кнопка меню не обновлена: %s", exc)
                 database.set_state("menu_url", app_url.rstrip("/"))
             database.set_state("menu_error", "")
         except RuntimeError as exc:

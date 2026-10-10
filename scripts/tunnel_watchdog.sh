@@ -54,12 +54,9 @@ apply_url() {
 import os
 from app import worker, database
 worker.set_app_url("$url")
+# Только общая кнопка: лишние вызовы роняют флуд-лимит Telegram.
 try:
-    admin_chat = int(os.environ.get("ADMIN_TELEGRAM_ID", "") or 0) or None
-except ValueError:
-    admin_chat = None
-try:
-    worker.configure_menu_button("$url", admin_chat)
+    worker.configure_menu_button("$url", None)
     print("$LOG_PREFIX кнопка меню -> $url")
 except Exception as exc:
     print("$LOG_PREFIX кнопка меню не обновилась:", exc)
