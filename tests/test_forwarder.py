@@ -939,6 +939,39 @@ class MultiUserTests(unittest.TestCase):
         self.assertEqual(database.get_cursor("chanone", key_a), 5)
         self.assertIsNone(database.get_cursor("chanone", key_b))
 
+    def test_put_config_enforces_personal_limits(self):
+        from fastapi import HTTPException
+
+        from app import main
+
+        init_data, token = self._init_data(777)
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": token}), \
+             patch("app.auth.time.time", return_value=2000000010):
+            owner = self._owner_user(token)
+            database.set_limits(777, max_sources=1, max_destinations=1)
+            with self.assertRaises(HTTPException) as ctx:
+                main.put_config(main.ConfigPayload(
+                    sources=["@aaaone", "@bbbtwo"], destinations=["@dstonly"],
+                ), owner)
+            self.assertEqual(ctx.exception.status_code, 422)
+            ok = main.put_config(main.ConfigPayload(
+                sources=["@aaaone"], destinations=["@dstonly"],
+            ), owner)
+            self.assertTrue(ok["saved"])
+
+    def test_admin_limits_endpoint(self):
+        from app import main
+
+        init_data, token = self._init_data(777)
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": token}), \
+             patch("app.auth.time.time", return_value=2000000010):
+            owner = self._owner_user(token)
+            database.upsert_user(895, "u", "U")
+            result = main.admin_user_limits(
+                895, main.UserLimitsPayload(max_sources=3, max_destinations=2), owner)
+            self.assertEqual(result["max_sources"], 3)
+            self.assertEqual(result["max_destinations"], 2)
+
     def test_regular_user_bot_commands_use_own_config(self):
         from app import telegram, worker
 
@@ -1118,6 +1151,158 @@ class MtprotoTests(unittest.TestCase):
         finally:
             database.DATABASE_PATH = original_path
             tmp_dir.cleanup()
+
+
+class AdminBotTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.original_path = database.DATABASE_PATH
+        database.DATABASE_PATH = Path(self.tmp_dir.name) / "test.sqlite3"
+        database.initialize()
+        database.set_state("admin_telegram_id", "777")
+        database.ensure_owner(777, "owner", "Owner")
+        database.upsert_user(888, "bob", "Bob")
+        database.set_user_enabled(888, True)
+
+    def tearDown(self):
+        database.DATABASE_PATH = self.original_path
+        self.tmp_dir.cleanup()
+
+    def _updates(self, messages):
+        return [
+            {"update_id": 600 + index, "message": message}
+            for index, message in enumerate(messages)
+        ]
+
+    def _drain_texts(self, texts, bot_request, sender=777):
+        from app import telegram, worker
+
+        messages = [
+            {"message_id": 100 + index, "text": text,
+             "chat": {"id": sender, "type": "private"}, "from": {"id": sender}}
+            for index, text in enumerate(texts)
+        ]
+
+        def fake_bot(method, data=None, files=None, timeout=30):
+            if method == "getUpdates":
+                return self._updates(messages)
+            return bot_request(method, data)
+
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "bot_request", side_effect=fake_bot):
+            worker.drain_direct_messages()
+
+    def _callback(self, data, bot_request, sender=777):
+        from app import telegram, worker
+
+        query = {"id": "q1", "data": data, "from": {"id": sender},
+                 "message": {"message_id": 5, "chat": {"id": sender, "type": "private"}}}
+
+        def fake_bot(method, data=None, files=None, timeout=30):
+            if method == "getUpdates":
+                return [{"update_id": 700, "callback_query": query}]
+            return bot_request(method, data)
+
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "bot_request", side_effect=fake_bot):
+            worker.drain_direct_messages()
+
+    def test_users_button_shows_list_with_inline_buttons(self):
+        sent = []
+
+        def bot_request(method, data):
+            if method == "sendMessage":
+                sent.append(data)
+            return {"message_id": 1}
+
+        self._drain_texts(["\U0001F465 Пользователи"], bot_request)
+        self.assertEqual(len(sent), 1)
+        markup = json.loads(sent[0]["reply_markup"])
+        callbacks = [b.get("callback_data", "") for row in markup["inline_keyboard"] for b in row]
+        self.assertTrue(any(c.startswith("adm:t:888") for c in callbacks))
+        self.assertIn("bob", sent[0]["text"])
+
+    def test_toggle_callback_blocks_user(self):
+        methods = []
+
+        def bot_request(method, data):
+            methods.append(method)
+            return {"message_id": 1}
+
+        self._callback("adm:t:888", bot_request)
+        self.assertFalse(database.get_user(888)["enabled"])
+        self.assertIn("answerCallbackQuery", methods)
+        # повторный тап включает обратно
+        self._callback("adm:t:888", bot_request)
+        self.assertTrue(database.get_user(888)["enabled"])
+
+    def test_delete_callback_removes_user(self):
+        def bot_request(method, data):
+            return {"message_id": 1}
+
+        self._callback("adm:x:888", bot_request)
+        self.assertIsNone(database.get_user(888))
+
+    def test_limit_steppers_change_limits(self):
+        def bot_request(method, data):
+            return {"message_id": 1}
+
+        self._callback("adm:s:+1:888", bot_request)
+        self.assertEqual(database.get_limits(database.user_key_for(888))[0], 6)
+        self._callback("adm:d:-1:888", bot_request)
+        self.assertEqual(database.get_limits(database.user_key_for(888))[1], 4)
+
+    def test_stranger_callback_is_rejected(self):
+        answered = []
+
+        def bot_request(method, data):
+            if method == "answerCallbackQuery":
+                answered.append(data)
+            return {"message_id": 1}
+
+        self._callback("adm:t:888", bot_request, sender=999)
+        self.assertTrue(database.get_user(888)["enabled"])
+        self.assertTrue(answered)
+
+    def test_invite_button_sends_link(self):
+        sent = []
+
+        def bot_request(method, data):
+            if method == "sendMessage":
+                sent.append(data.get("text", ""))
+            return {"message_id": 1}
+
+        self._drain_texts(["\U0001F517 Приглашение"], bot_request)
+        self.assertTrue(any("?invite=" in text for text in sent))
+
+    def test_ban_unban_commands(self):
+        answers = []
+
+        def bot_request(method, data):
+            answers.append(data.get("text", ""))
+            return {"message_id": 1}
+
+        self._drain_texts(["/ban @bob", "/unban 888"], bot_request)
+        self.assertIn("заблокирован", answers[0].lower())
+        self.assertIn("разблокирован", answers[1].lower())
+        self.assertTrue(database.get_user(888)["enabled"])
+
+    def test_regular_user_sees_no_admin_buttons(self):
+        from app import worker
+
+        key = database.user_key_for(888)
+        keyboard = worker._main_keyboard(key)
+        flat = [b.get("text", "") for row in keyboard["keyboard"] for b in row]
+        self.assertNotIn("\U0001F465 Пользователи", flat)
+        self.assertIn("\U0001F4E2 Мои каналы", flat)
+
+    def test_owner_keyboard_has_admin_row(self):
+        from app import worker
+
+        keyboard = worker._main_keyboard(database.user_key_for(777))
+        flat = [b.get("text", "") for row in keyboard["keyboard"] for b in row]
+        self.assertIn("\U0001F465 Пользователи", flat)
+        self.assertIn("\U0001F517 Приглашение", flat)
 
 
 class DirectTests(unittest.TestCase):

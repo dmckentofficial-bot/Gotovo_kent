@@ -91,6 +91,11 @@ def initialize():
             connection.execute("ALTER TABLE history ADD COLUMN destination TEXT NOT NULL DEFAULT ''")
         if "user_key" not in [row[1] for row in connection.execute("PRAGMA table_info(history)").fetchall()]:
             connection.execute("ALTER TABLE history ADD COLUMN user_key TEXT NOT NULL DEFAULT ''")
+        user_columns = [row[1] for row in connection.execute("PRAGMA table_info(users)").fetchall()]
+        if "max_sources" not in user_columns:
+            connection.execute("ALTER TABLE users ADD COLUMN max_sources INTEGER NOT NULL DEFAULT 5")
+        if "max_destinations" not in user_columns:
+            connection.execute("ALTER TABLE users ADD COLUMN max_destinations INTEGER NOT NULL DEFAULT 5")
         connection.execute(
             "INSERT OR IGNORE INTO config (id, value) VALUES (1, ?)",
             (json.dumps(DEFAULT_CONFIG, ensure_ascii=False),),
@@ -264,6 +269,48 @@ def history_stats(user_key=None):
         "errors": counts.get("error", 0),
         "total": sum(counts.values()),
     }
+
+
+def get_limits(user_key):
+    """Лимиты пользователя (источники, свои каналы). По умолчанию 5/5."""
+    default = (5, 5)
+    if not user_key or not user_key.startswith("u"):
+        return default
+    try:
+        user_id = int(user_key[1:])
+    except ValueError:
+        return default
+    user = get_user(user_id)
+    if not user:
+        return default
+    try:
+        max_sources = max(1, min(20, int(user.get("max_sources", 5) or 5)))
+    except (TypeError, ValueError):
+        max_sources = 5
+    try:
+        max_destinations = max(1, min(20, int(user.get("max_destinations", 5) or 5)))
+    except (TypeError, ValueError):
+        max_destinations = 5
+    return max_sources, max_destinations
+
+
+def set_limits(user_id, max_sources=None, max_destinations=None):
+    updates = []
+    params = []
+    if max_sources is not None:
+        updates.append("max_sources = ?")
+        params.append(max(1, min(20, int(max_sources))))
+    if max_destinations is not None:
+        updates.append("max_destinations = ?")
+        params.append(max(1, min(20, int(max_destinations))))
+    if not updates:
+        return get_user(user_id)
+    params.append(int(user_id))
+    with connect() as connection:
+        connection.execute(
+            f"UPDATE users SET {', '.join(updates)} WHERE user_id = ?", tuple(params)
+        )
+    return get_user(user_id)
 
 
 def user_state_key(user_key, name):

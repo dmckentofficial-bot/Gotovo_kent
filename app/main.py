@@ -28,9 +28,9 @@ worker_thread = None
 
 
 class ConfigPayload(BaseModel):
-    sources: list[str] = Field(default_factory=list, max_length=5)
+    sources: list[str] = Field(default_factory=list, max_length=20)
     destination: str = Field(default="", max_length=100)
-    destinations: list[str] = Field(default_factory=list, max_length=5)
+    destinations: list[str] = Field(default_factory=list, max_length=20)
     filter_enabled: bool = False
     filter_terms: str = Field(default="", max_length=2000)
     filter_mode: Literal["any", "all"] = "any"
@@ -255,6 +255,10 @@ async def lifespan(_app):
             database.migrate_legacy_to(database.user_key_for(owner_id))
     except Exception as exc:  # noqa: BLE001 - без миграции работаем как раньше
         logger.warning("Миграция данных владельца не удалась: %s", exc)
+    try:
+        worker.sync_bot_commands()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Команды бота не обновлены: %s", exc)
 
     app_url = os.environ.get("APP_URL") or os.environ.get("RENDER_EXTERNAL_URL", "")
     if telegram.BOT_TOKEN and app_url and admin_id:
@@ -434,11 +438,15 @@ def _ukey(user):
 
 @app.get("/api/me")
 def me(_user=Depends(require_user)):
+    key = _ukey(_user)
+    max_sources, max_destinations = database.get_limits(key) if key else (5, 5)
     return {
         "id": _user.get("id"),
         "username": _user.get("username", ""),
         "first_name": _user.get("first_name", ""),
         "role": _user.get("role", "user"),
+        "max_sources": max_sources,
+        "max_destinations": max_destinations,
     }
 
 
@@ -453,6 +461,11 @@ class InviteCreatePayload(BaseModel):
 
 class UserEnabledPayload(BaseModel):
     enabled: bool
+
+
+class UserLimitsPayload(BaseModel):
+    max_sources: int = Field(default=5, ge=1, le=20)
+    max_destinations: int = Field(default=5, ge=1, le=20)
 
 
 @app.post("/api/invites/redeem")
@@ -477,12 +490,15 @@ def admin_users(_user=Depends(require_admin)):
         key = database.user_key_for(user["user_id"])
         config = database.get_config(key)
         stats = database.history_stats(key)
+        max_sources, max_destinations = database.get_limits(key)
         result.append({
             "id": user["user_id"],
             "username": user["username"],
             "first_name": user["first_name"],
             "role": user["role"],
             "enabled": bool(user["enabled"]),
+            "max_sources": max_sources,
+            "max_destinations": max_destinations,
             "sources": len(config.get("sources", [])),
             "destinations": len(config.get("destinations") or ([config["destination"]] if config.get("destination") else [])),
             "forwarding": bool(config.get("enabled")),
@@ -502,6 +518,21 @@ def admin_user_enabled(user_id: int, payload: UserEnabledPayload, _user=Depends(
         raise HTTPException(status_code=400, detail="Владельца отключить нельзя.")
     database.set_user_enabled(user_id, payload.enabled)
     return {"ok": True, "enabled": payload.enabled}
+
+
+@app.put("/api/admin/users/{user_id}/limits")
+def admin_user_limits(user_id: int, payload: UserLimitsPayload, _user=Depends(require_admin)):
+    target = database.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Пользователь не найден.")
+    if target["role"] == "owner":
+        raise HTTPException(status_code=400, detail="Лимиты владельца не меняются.")
+    updated = database.set_limits(user_id, payload.max_sources, payload.max_destinations)
+    return {
+        "ok": True,
+        "max_sources": updated["max_sources"],
+        "max_destinations": updated["max_destinations"],
+    }
 
 
 @app.delete("/api/admin/users/{user_id}")
@@ -558,6 +589,11 @@ def put_config(payload: ConfigPayload, _user=Depends(require_user)):
         raise HTTPException(
             status_code=422, detail=f"Больше {database.MAX_DESTINATIONS} своих каналов нельзя."
         )
+    max_sources, max_destinations = database.get_limits(key)
+    if len(normalized_destinations) > max_destinations:
+        raise HTTPException(
+            status_code=422, detail=f"Ваш лимит: {max_destinations} своих каналов."
+        )
     normalized_sources = []
     for source in payload.sources:
         if not source.strip():
@@ -570,6 +606,10 @@ def put_config(payload: ConfigPayload, _user=Depends(require_user)):
             normalized_sources.append(username)
     if not normalized_sources:
         raise HTTPException(status_code=422, detail="Добавьте хотя бы один публичный канал-источник.")
+    if len(normalized_sources) > max_sources:
+        raise HTTPException(
+            status_code=422, detail=f"Ваш лимит: {max_sources} источников."
+        )
     if payload.filter_enabled and not payload.filter_terms.strip():
         raise HTTPException(status_code=422, detail="Укажите слова или хэштеги для фильтра.")
 

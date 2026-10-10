@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import threading
@@ -6,6 +7,9 @@ import time
 
 from . import database
 from . import telegram
+
+
+logger = logging.getLogger("app.worker")
 
 
 POLL_SECONDS = 60
@@ -27,6 +31,9 @@ HELP_TEXT = (
     "/on и /off — включить/выключить\n"
     "/sig текст — включить подпись\n"
     "/sigoff — выключить подпись\n"
+    "/users — пользователи (владелец)\n"
+    "/invite — выдать доступ (владелец)\n"
+    "/ban, /unban — блокировка (владелец)\n"
     "/list — копируемые каналы и свои\n"
     "/add канал — добавить источник\n"
     "/del канал — убрать источник\n"
@@ -49,6 +56,8 @@ BTN_MY = "📢 Мои каналы"
 BTN_ADD = "➕ Добавить"
 BTN_DEL = "➖ Убрать"
 BTN_TEST = "✅ Проверка"
+BTN_USERS = "👥 Пользователи"
+BTN_INVITE = "🔗 Приглашение"
 BTN_HELP = "❓ Помощь"
 
 
@@ -87,7 +96,16 @@ def _main_keyboard(user_key=None):
         [{"text": BTN_ADD}, {"text": BTN_DEL}],
         [{"text": BTN_HELP}],
     ]
+    if _is_owner_key(user_key):
+        rows.append([{"text": BTN_USERS}, {"text": BTN_INVITE}])
     return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
+
+
+def _is_owner_key(user_key):
+    if not user_key:
+        return False
+    owner = _owner_id()
+    return owner is not None and user_key == database.user_key_for(owner)
 
 
 def _answer_private(chat_id, text, keyboard=False, user_key=None):
@@ -277,8 +295,9 @@ def _cmd_add(argument, user_key=None):
         return str(exc)
     if username.casefold() in {value.casefold() for value in sources}:
         return f"@{username} уже в списке."
-    if len(sources) >= MAX_SOURCES:
-        return f"Больше {MAX_SOURCES} источников нельзя."
+    if len(sources) >= database.get_limits(user_key)[0]:
+        limit = database.get_limits(user_key)[0]
+        return f"Больше {limit} источников нельзя."
     sources.append(username)
     _save_sources(sources, user_key)
     return f"@{username} добавлен. Всего: {len(sources)}."
@@ -336,8 +355,9 @@ def _cmd_my_destination(argument, user_key=None):
         destinations = [config["destination"]]
     if destination.casefold() in {value.casefold() for value in destinations}:
         return f"{destination} уже в списке."
-    if len(destinations) >= database.MAX_DESTINATIONS:
-        return f"Больше {database.MAX_DESTINATIONS} своих каналов нельзя."
+    limit = database.get_limits(user_key)[1]
+    if len(destinations) >= limit:
+        return f"Больше {limit} своих каналов нельзя."
     destinations.append(destination)
     config["destination"] = destinations[0]
     config["destinations"] = destinations
@@ -406,10 +426,209 @@ def _handle_owner_command(text, user_key=None):
         "/dest": lambda: _cmd_destination(argument, user_key),
         "/mydest": lambda: _cmd_my_destination(argument, user_key),
         "/delm": lambda: _cmd_delete_destination(argument, user_key),
+        "/users": lambda: _cmd_users(user_key),
+        "/invite": lambda: _cmd_invite(user_key),
+        "/ban": lambda: _cmd_ban(argument, user_key),
+        "/unban": lambda: _cmd_unban(argument, user_key),
         "/test": lambda: _cmd_test(user_key),
     }
     handler = handlers.get(command)
     return handler() if handler else ""
+
+
+def _owner_guard(user_key):
+    """Текст-заглушка для команд только владельцу (пусто = можно)."""
+    if _is_owner_key(user_key):
+        return ""
+    return "Раздел только для владельца."
+
+
+def _cmd_users(user_key=None):
+    denied = _owner_guard(user_key)
+    if denied:
+        return denied
+    text, _ = _admin_users_message()
+    return text
+
+
+def _cmd_invite(user_key=None):
+    denied = _owner_guard(user_key)
+    if denied:
+        return denied
+    invite = database.create_invite()
+    base = _app_url()
+    link = f"{base}/?invite={invite['token']}" if base else f"?invite={invite['token']}"
+    return f"Новая ссылка (без лимита):\n{link}"
+
+
+def _cmd_ban(argument, user_key=None):
+    denied = _owner_guard(user_key)
+    if denied:
+        return denied
+    target = (argument or "").strip().lstrip("@")
+    if not target:
+        return "Использование: /ban ID или @username."
+    user = _find_user(target)
+    if not user:
+        return "Пользователь не найден."
+    if user["role"] == "owner":
+        return "Владельца заблокировать нельзя."
+    database.set_user_enabled(user["user_id"], False)
+    return f"{_display_name(user)} заблокирован."
+
+
+def _cmd_unban(argument, user_key=None):
+    denied = _owner_guard(user_key)
+    if denied:
+        return denied
+    target = (argument or "").strip().lstrip("@")
+    if not target:
+        return "Использование: /unban ID или @username."
+    user = _find_user(target)
+    if not user:
+        return "Пользователь не найден."
+    database.set_user_enabled(user["user_id"], True)
+    return f"{_display_name(user)} разблокирован."
+
+
+def _find_user(target):
+    if target.isdigit():
+        return database.get_user(int(target))
+    cleaned = target.casefold()
+    for user in database.list_users():
+        if (user["username"] or "").casefold() == cleaned:
+            return user
+    return None
+
+
+def _display_name(user):
+    if user["username"]:
+        return f"@{user['username']}"
+    return f"ID {user['user_id']}"
+
+
+def _admin_users_message():
+    """Текст + инлайн-клавиатура управления пользователями (только владелец)."""
+    users = database.list_users()
+    if not users:
+        return "Пользователей пока нет.", None
+    lines = ["Пользователи:"]
+    keyboard = []
+    for user in users:
+        key = database.user_key_for(user["user_id"])
+        config = database.get_config(key)
+        stats = database.history_stats(key)
+        max_sources, max_destinations = database.get_limits(key)
+        name = _display_name(user)
+        if user["first_name"]:
+            name = f"{name} ({user['first_name']})"
+        mark = "👑" if user["role"] == "owner" else ("✅" if user["enabled"] else "⛔")
+        lines.append(
+            f"{mark} {name} — ист.: {len(config.get('sources', []))}/{max_sources}, "
+            f"кан.: {len(config.get('destinations') or ([config['destination']] if config.get('destination') else []))}/{max_destinations}, "
+            f"переслано: {stats['forwarded']}, ошибок: {stats['errors']}"
+        )
+        if user["role"] != "owner":
+            uid = user["user_id"]
+            keyboard.append([
+                {"text": f"{'⛔' if user['enabled'] else '✅'} {name[:18]}", "callback_data": f"adm:t:{uid}"},
+                {"text": "✕", "callback_data": f"adm:x:{uid}"},
+            ])
+            keyboard.append([
+                {"text": "Ист −", "callback_data": f"adm:s:-1:{uid}"},
+                {"text": "Ист +", "callback_data": f"adm:s:+1:{uid}"},
+                {"text": "Кан −", "callback_data": f"adm:d:-1:{uid}"},
+                {"text": "Кан +", "callback_data": f"adm:d:+1:{uid}"},
+            ])
+    markup = {"inline_keyboard": keyboard} if keyboard else None
+    return "\n".join(lines), markup
+
+
+def _admin_invites_message():
+    invites = [inv for inv in database.list_invites() if not inv["revoked"]][-5:]
+    lines = ["Активные приглашения:"]
+    keyboard = []
+    if not invites:
+        lines.append("— нет —")
+    for invite in invites:
+        left = f"{invite['uses']}/{invite['max_uses']}" if invite["max_uses"] else f"{invite['uses']}/∞"
+        lines.append(f"• входов: {left}" + (f", до {invite['expires_at'][:10]}" if invite["expires_at"] else ""))
+        keyboard.append([{"text": f"Отозвать ({left})", "callback_data": f"adm:r:{invite['token']}"}])
+    markup = {"inline_keyboard": keyboard} if keyboard else None
+    return "\n".join(lines), markup
+
+
+def _answer_callback(query_id, text="", alert=False):
+    try:
+        payload = {"callback_query_id": query_id, "show_alert": alert}
+        if text:
+            payload["text"] = text[:200]
+        telegram.bot_request("answerCallbackQuery", payload, timeout=15)
+    except RuntimeError:
+        pass
+
+
+def _handle_admin_callback(query):
+    """Инлайн-кнопки админа. Возвращает True, если колбэк наш."""
+    data = (query.get("data") or "")
+    if not data.startswith("adm:"):
+        return False
+    sender = query.get("from") or {}
+    owner_id = _owner_id()
+    if owner_id is None or sender.get("id") != owner_id:
+        _answer_callback(query.get("id", ""), "Только для владельца.", alert=True)
+        return True
+    parts = data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    message = query.get("message") or {}
+    chat_id = (message.get("chat") or {}).get("id")
+    message_id = message.get("message_id")
+    try:
+        if action == "users":
+            text, markup = _admin_users_message()
+        elif action == "invites":
+            text, markup = _admin_invites_message()
+        elif action == "t" and len(parts) == 3:
+            user = database.get_user(int(parts[2]))
+            if not user or user["role"] == "owner":
+                raise ValueError("Нельзя переключить владельца.")
+            database.set_user_enabled(int(parts[2]), not user["enabled"])
+            text, markup = _admin_users_message()
+        elif action == "x" and len(parts) == 3:
+            user = database.get_user(int(parts[2]))
+            if not user or user["role"] == "owner":
+                raise ValueError("Владельца удалить нельзя.")
+            database.delete_user_everything(int(parts[2]))
+            text, markup = _admin_users_message()
+        elif action in ("s", "d") and len(parts) == 4:
+            user = database.get_user(int(parts[3]))
+            if not user or user["role"] == "owner":
+                raise ValueError("Лимиты владельца не меняются.")
+            step = 1 if parts[2] == "+1" else -1
+            max_sources, max_destinations = database.get_limits(database.user_key_for(user["user_id"]))
+            if action == "s":
+                database.set_limits(user["user_id"], max_sources=max_sources + step)
+            else:
+                database.set_limits(user["user_id"], max_destinations=max_destinations + step)
+            text, markup = _admin_users_message()
+        elif action == "r" and len(parts) == 3:
+            database.revoke_invite(parts[2])
+            text, markup = _admin_invites_message()
+        else:
+            raise ValueError("Неизвестное действие.")
+    except (ValueError, TypeError) as exc:
+        _answer_callback(query.get("id", ""), str(exc), alert=True)
+        return True
+    _answer_callback(query.get("id", ""))
+    if chat_id and message_id:
+        try:
+            payload = {"chat_id": chat_id, "message_id": message_id, "text": text}
+            if markup:
+                payload["reply_markup"] = json.dumps(markup)
+            telegram.bot_request("editMessageText", payload, timeout=15)
+        except RuntimeError:
+            pass
+    return True
 
 
 def _direct_media_label(message):
@@ -435,7 +654,7 @@ def drain_direct_messages():
         return
     owner_id = _owner_id()
 
-    params = {"timeout": 10, "allowed_updates": json.dumps(["message"])}
+    params = {"timeout": 10, "allowed_updates": json.dumps(["message", "callback_query"])}
     try:
         offset = int(database.get_state("bot_updates_offset", "") or 0)
     except ValueError:
@@ -455,6 +674,9 @@ def drain_direct_messages():
             continue
         database.set_state("bot_updates_offset", update_id + 1)
         try:
+            if "callback_query" in update:
+                _handle_admin_callback(update["callback_query"])
+                continue
             _handle_private_update(update, owner_id)
         except Exception as exc:
             # Одно битое обновление не должно ронять весь приёмник.
@@ -521,8 +743,27 @@ def _handle_private_update(update, owner_id):
         return
     destinations = _destinations_of(user_key)
     if text in (BTN_RUN, BTN_STOP, BTN_SIGN, BTN_STATS, BTN_LIST, BTN_MY,
-                BTN_TEST, BTN_HELP, BTN_ADD, BTN_DEL):
+                BTN_TEST, BTN_HELP, BTN_ADD, BTN_DEL, BTN_USERS, BTN_INVITE):
         _clear_pending()
+        if text in (BTN_USERS, BTN_INVITE):
+            if not _is_owner_key(user_key):
+                _answer_private(chat.get("id"), "Раздел только для владельца.", keyboard="main", user_key=user_key)
+                return
+            if text == BTN_USERS:
+                body, markup = _admin_users_message()
+            else:
+                invite = database.create_invite()
+                base = _app_url()
+                link = f"{base}/?invite={invite['token']}" if base else f"?invite={invite['token']}"
+                body, markup = f"Новая ссылка (без лимита):\n{link}", None
+            payload = {"chat_id": chat.get("id"), "text": body}
+            if markup:
+                payload["reply_markup"] = json.dumps(markup)
+            try:
+                telegram.bot_request("sendMessage", payload, timeout=30)
+            except RuntimeError as exc:
+                database.set_state("bot_answer_error", str(exc)[:300])
+            return
         if text == BTN_RUN:
             _answer_private(chat.get("id"), _cmd_set_enabled(True, user_key), keyboard="main", user_key=user_key)
         elif text == BTN_STOP:
@@ -875,3 +1116,37 @@ def configure_menu_button(app_url, admin_id=None):
         if chat_id is not None:
             data["chat_id"] = chat_id
         telegram.bot_request("setChatMenuButton", data)
+
+
+BOT_COMMANDS = [
+    ("start", "Пульт и помощь"),
+    ("status", "Состояние пересылки"),
+    ("stats", "Счётчики"),
+    ("on", "Включить пересылку"),
+    ("off", "Остановить пересылку"),
+    ("sig", "Подпись: /sig текст"),
+    ("sigoff", "Выключить подпись"),
+    ("list", "Источники и свои каналы"),
+    ("add", "Добавить источник: /add @канал"),
+    ("del", "Убрать источник: /del @канал"),
+    ("dest", "Свои каналы одним: /dest @канал"),
+    ("mydest", "Добавить свой канал"),
+    ("delm", "Убрать свой канал"),
+    ("users", "Пользователи (владелец)"),
+    ("invite", "Выдать доступ (владелец)"),
+    ("ban", "Заблокировать (владелец)"),
+    ("unban", "Разблокировать (владелец)"),
+    ("test", "Проверить подключение"),
+    ("id", "Ваш Telegram ID"),
+]
+
+
+def sync_bot_commands():
+    try:
+        telegram.bot_request(
+            "setMyCommands",
+            {"commands": json.dumps([{"command": name, "description": text} for name, text in BOT_COMMANDS])},
+            timeout=15,
+        )
+    except RuntimeError as exc:
+        logger.warning("Команды бота не обновлены: %s", exc)

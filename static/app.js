@@ -110,7 +110,7 @@
   try { adminKey = localStorage.getItem(ADMIN_KEY_STORAGE) || ""; } catch (_) {}
 
   const AUTO_REFRESH_MS = 15000;
-  const MAX_SOURCES = 5;
+  let myLimits = { max_sources: 5, max_destinations: 5 };
   const PIN_DIGITS = 4;
   const STATUS_LABELS = { forwarded: "Переслано", filtered: "Фильтр", skipped: "Пропущено", error: "Ошибка" };
   const STATUS_ICONS = { forwarded: "✓", filtered: "⌁", skipped: "↷", error: "!" };
@@ -447,8 +447,8 @@
       }
       nodes.sources.append(row);
     });
-    nodes.sourceCounter.textContent = `${config.sources.length} / ${MAX_SOURCES}`;
-    nodes.addSource.disabled = config.sources.length >= MAX_SOURCES;
+    nodes.sourceCounter.textContent = `${config.sources.length} / ${myLimits.max_sources}`;
+    nodes.addSource.disabled = config.sources.length >= myLimits.max_sources;
   }
 
   function renderDestinations() {
@@ -484,8 +484,8 @@
       }
       nodes.destinations.append(row);
     });
-    nodes.destinationCounter.textContent = `${config.destinations.length} / ${MAX_SOURCES}`;
-    nodes.addDestination.disabled = config.destinations.length >= MAX_SOURCES;
+    nodes.destinationCounter.textContent = `${config.destinations.length} / ${myLimits.max_destinations}`;
+    nodes.addDestination.disabled = config.destinations.length >= myLimits.max_destinations;
   }
 
   function readForm() {
@@ -1184,6 +1184,42 @@
         });
         row.append(toggle, remove);
         card.append(row);
+        const stepper = (label, kind, value) => {
+          const line = document.createElement("div");
+          line.className = "button-row";
+          const minus = document.createElement("button");
+          minus.className = "button secondary";
+          minus.type = "button";
+          minus.textContent = "−";
+          minus.setAttribute("aria-label", `Уменьшить ${label}`);
+          const info = document.createElement("span");
+          info.className = "hint";
+          info.textContent = `${label}: ${value}`;
+          info.style.alignSelf = "center";
+          const plus = document.createElement("button");
+          plus.className = "button secondary";
+          plus.type = "button";
+          plus.textContent = "+";
+          plus.setAttribute("aria-label", `Увеличить ${label}`);
+          const send = async (next) => {
+            haptic("light");
+            try {
+              await api(`/api/admin/users/${user.id}/limits`, {
+                method: "PUT",
+                body: JSON.stringify(kind === "src"
+                  ? { max_sources: next, max_destinations: user.max_destinations }
+                  : { max_sources: user.max_sources, max_destinations: next }),
+              });
+              await loadAdminPanel();
+            } catch (error) { showNotice(error.message, "error"); }
+          };
+          minus.addEventListener("click", () => send(Math.max(1, value - 1)));
+          plus.addEventListener("click", () => send(Math.min(20, value + 1)));
+          line.append(minus, info, plus);
+          card.append(line);
+        };
+        stepper("Ист", "src", user.max_sources || 5);
+        stepper("Кан", "dst", user.max_destinations || 5);
       }
       nodes.adminUsers.append(card);
     }
@@ -1422,7 +1458,7 @@
 
   /* ---------- settings events ---------- */
   nodes.addSource.addEventListener("click", () => {
-    if (config.sources.length < MAX_SOURCES) {
+    if (config.sources.length < myLimits.max_sources) {
       config.sources.push("");
       renderSources();
       nodes.sources.lastElementChild?.querySelector("input")?.focus();
@@ -1430,7 +1466,7 @@
   });
 
   nodes.addDestination.addEventListener("click", () => {
-    if (config.destinations.length < MAX_SOURCES) {
+    if (config.destinations.length < myLimits.max_destinations) {
       config.destinations.push("");
       renderDestinations();
       nodes.destinations.lastElementChild?.querySelector("input")?.focus();
@@ -1593,6 +1629,10 @@
         }
       }
       applyRole(me.role);
+      myLimits = {
+        max_sources: Math.max(1, Math.min(20, parseInt(me.max_sources, 10) || 5)),
+        max_destinations: Math.max(1, Math.min(20, parseInt(me.max_destinations, 10) || 5)),
+      };
       const isOwner = me.role === "owner";
       const pinStatus = isOwner ? await api("/api/pin/status") : { enabled: false };
       pinConfigured = Boolean(pinStatus.enabled);
