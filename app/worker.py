@@ -71,6 +71,8 @@ def poll_once():
                     full = telegram.fetch_single_post(source, post_id)
                     if full.get("text"):
                         post["text"] = full["text"]
+                    if full.get("html"):
+                        post["html"] = full["html"]
                     if full.get("media"):
                         post["media"] = full["media"]
                 except RuntimeError:

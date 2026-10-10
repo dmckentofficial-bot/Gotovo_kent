@@ -199,6 +199,37 @@ class MessageTests(unittest.TestCase):
         self.assertEqual(post["id"], "9")
         self.assertEqual(post["text"], "Полный текст девятого поста")
 
+    def test_parser_preserves_html_formatting_and_links(self):
+        source = """
+        <div class="tgme_widget_message_wrap" data-post="source/9">
+          <div class="tgme_widget_message_text"><b>Жирный</b> и <i>курсив</i>,
+          <a href="https://example.org/page">читать тут</a><br>конец</div>
+        </div>
+        """
+        parser = telegram.PublicFeedParser()
+        parser.feed(source)
+        post = parser.posts[0]
+        self.assertIn("<b>Жирный</b>", post["html"])
+        self.assertIn("<i>курсив</i>", post["html"])
+        self.assertIn('<a href="https://example.org/page">читать тут</a>', post["html"])
+        # plain-text остаётся для фильтра и истории
+        self.assertIn("Жирный", post["text"])
+        self.assertIn("читать тут", post["text"])
+
+    def test_upload_fallback_sends_html_with_parse_mode(self):
+        post = {
+            "text": "Жирный и ссылка",
+            "html": '<b>Жирный</b> и <a href="https://example.org/">ссылка</a>',
+            "media": [],
+        }
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch("app.telegram.requests.post", return_value=self._bot_response()) as send:
+            telegram.publish_post(post, "@dest", "")
+
+        data = send.call_args.kwargs["data"]
+        self.assertEqual(data.get("parse_mode"), "HTML")
+        self.assertIn("<b>Жирный</b>", data["text"])
+
     def test_publish_post_falls_back_to_full_upload_when_copy_impossible(self):
         # Бота нет в чужом канале: copyMessage невозможен — пост обязан
         # дойти целиком через перезаливку, а не потеряться с ошибкой.

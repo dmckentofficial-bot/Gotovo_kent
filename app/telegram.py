@@ -121,9 +121,34 @@ def normalize_destination(value):
 
 
 class PublicFeedParser(HTMLParser):
+    """Парсит публичную ленту t.me/s, сохраняя текст, HTML-форматирование и медиа.
+
+    Новый способ пересылки в полном объёме: помимо plain-text (для фильтра
+    и истории) собираем Telegram-совместимый HTML — жирный/курсив/ссылки/
+    код/спойлеры/кастомные эмодзи. Отправка идёт с parse_mode=HTML, поэтому
+    ссылки остаются кликабельными прямо в тексте, а не привеском в скобках.
+    """
+
     VOID_TAGS = {
         "area", "base", "br", "col", "embed", "hr", "img", "input",
         "link", "meta", "param", "source", "track", "wbr",
+    }
+
+    # Тег вёрстки -> (открывающий HTML, закрывающий HTML). None = выкинуть тег,
+    # но оставить его текстовое содержимое.
+    HTML_TAG_MAP = {
+        "b": ("<b>", "</b>"),
+        "strong": ("<b>", "</b>"),
+        "i": ("<i>", "</i>"),
+        "em": ("<i>", "</i>"),
+        "u": ("<u>", "</u>"),
+        "ins": ("<u>", "</u>"),
+        "s": ("<s>", "</s>"),
+        "strike": ("<s>", "</s>"),
+        "del": ("<s>", "</s>"),
+        "code": ("<code>", "</code>"),
+        "pre": ("<pre>", "</pre>"),
+        "blockquote": ("<blockquote>", "</blockquote>"),
     }
 
     def __init__(self):
@@ -134,6 +159,40 @@ class PublicFeedParser(HTMLParser):
         self.wrap_depth = None
         self.text_depth = None
         self.anchor_stack = []
+        self.html_stack = []
+
+    def _html_open(self, tag, attr_map, depth):
+        """Преобразует открывающий тег вёрстки в Telegram-HTML либо пропускает."""
+        parts = self.current["html_parts"]
+        if tag == "br":
+            parts.append("\n")
+            return
+        if tag == "a":
+            href = html.unescape((attr_map.get("href") or "").strip())
+            if urlparse(href).scheme.lower() in {"http", "https"}:
+                safe_href = html.escape(href, quote=True)
+                parts.append(f'<a href="{safe_href}">')
+                self.html_stack.append({"depth": depth, "close": "</a>"})
+            return
+        if tag == "tg-emoji":
+            emoji_id = (attr_map.get("emoji-id") or "").strip()
+            if emoji_id.isdigit():
+                parts.append(f'<tg-emoji emoji-id="{emoji_id}">')
+                self.html_stack.append({"depth": depth, "close": "</tg-emoji>"})
+            return
+        if tag == "span" and "tg-spoiler" in set((attr_map.get("class") or "").split()):
+            parts.append('<span class="tg-spoiler">')
+            self.html_stack.append({"depth": depth, "close": "</span>"})
+            return
+        mapped = self.HTML_TAG_MAP.get(tag)
+        if mapped:
+            parts.append(mapped[0])
+            self.html_stack.append({"depth": depth, "close": mapped[1]})
+
+    def _html_close(self, depth):
+        """Закрывает HTML-теги, открытые на заданной глубине."""
+        while self.html_stack and self.html_stack[-1]["depth"] == depth:
+            self.current["html_parts"].append(self.html_stack.pop()["close"])
 
     def add_media(self, url, media_type):
         if not url or self.current is None:
@@ -156,8 +215,9 @@ class PublicFeedParser(HTMLParser):
         classes = set(attr_map.get("class", "").split())
 
         if tag == "div" and "tgme_widget_message_wrap" in classes:
-            self.current = {"id": "", "text_parts": [], "media": [], "links": []}
+            self.current = {"id": "", "text_parts": [], "html_parts": [], "media": [], "links": []}
             self.wrap_depth = depth
+            self.html_stack = []
 
         if self.current is not None:
             post_id = attr_map.get("data-post", "")
@@ -165,6 +225,8 @@ class PublicFeedParser(HTMLParser):
                 self.current["id"] = post_id.rsplit("/", 1)[-1]
             if tag == "div" and "tgme_widget_message_text" in classes:
                 self.text_depth = depth
+            if self.text_depth is not None and depth > self.text_depth:
+                self._html_open(tag, attr_map, depth)
             if tag == "a" and self.text_depth is not None:
                 href = html.unescape(attr_map.get("href", "").strip())
                 if urlparse(href).scheme.lower() in {"http", "https"}:
@@ -192,6 +254,8 @@ class PublicFeedParser(HTMLParser):
     def handle_endtag(self, tag):
         depth = len(self.stack)
         if self.current is not None:
+            if self.text_depth is not None and depth > self.text_depth:
+                self._html_close(depth)
             if tag == "a" and self.anchor_stack and self.anchor_stack[-1]["depth"] == depth:
                 anchor = self.anchor_stack.pop()
                 href = anchor["href"]
@@ -206,12 +270,16 @@ class PublicFeedParser(HTMLParser):
                 self.current["text"] = re.sub(
                     r"\n{3,}", "\n\n", "".join(self.current.pop("text_parts")).strip()
                 )
+                self.current["html"] = re.sub(
+                    r"\n{3,}", "\n\n", "".join(self.current.pop("html_parts")).strip()
+                )
                 if self.current["id"].isdigit():
                     self.posts.append(self.current)
                 self.current = None
                 self.wrap_depth = None
                 self.text_depth = None
                 self.anchor_stack = []
+                self.html_stack = []
 
         for index in range(len(self.stack) - 1, -1, -1):
             if self.stack[index] == tag:
@@ -221,6 +289,7 @@ class PublicFeedParser(HTMLParser):
     def handle_data(self, data):
         if self.current is not None and self.text_depth is not None:
             self.current["text_parts"].append(data)
+            self.current["html_parts"].append(html.escape(data))
             if self.anchor_stack:
                 self.anchor_stack[-1]["text_parts"].append(data)
 
@@ -270,6 +339,25 @@ def fetch_single_post(username, post_id):
 
 def text_units(text):
     return len(text.encode("utf-16-le")) // 2
+
+
+TAG_RE = re.compile(r"<[^>]+>")
+
+
+def visible_text(html_text):
+    """Видимый текст без HTML-тегов (для подсчёта лимитов Telegram)."""
+    return html.unescape(TAG_RE.sub("", html_text or ""))
+
+
+def visible_units(html_text):
+    return text_units(visible_text(html_text))
+
+
+def post_html(post):
+    """HTML поста: из парсера либо экранированный plain-text."""
+    if post.get("html"):
+        return post["html"]
+    return html.escape(post.get("text", ""))
 
 
 def split_text(text, limit):
@@ -338,6 +426,14 @@ def _append_signature(text, signature):
     if not signature:
         return text
     return f"{text}\n\n{signature}" if text else signature
+
+
+def _append_signature_html(html_text, signature):
+    signature = (signature or "").strip()
+    if not signature:
+        return html_text
+    safe_signature = html.escape(signature)
+    return f"{html_text}\n\n{safe_signature}" if html_text else safe_signature
 
 
 def _apply_signature(chat_id, copied, signature):
@@ -484,6 +580,8 @@ def publish_post(post, destination, signature=""):
                 full = fetch_single_post(source_username.lstrip("@"), int(message_id))
                 if full.get("text"):
                     enriched["text"] = full["text"]
+                if full.get("html"):
+                    enriched["html"] = full["html"]
                 if full.get("media"):
                     enriched["media"] = full["media"]
             except (RuntimeError, ValueError):
@@ -492,12 +590,20 @@ def publish_post(post, destination, signature=""):
                 raise copy_exc from None
             post = enriched
 
-    # Перезаливка в полном объёме (fallback и ручной вызов без привязки).
-    text = _append_signature(post.get("text", "").strip(), signature)
+    # Перезаливка в полном объёме с сохранением форматирования (fallback
+    # и ручной вызов без привязки). HTML из парсера идёт с parse_mode=HTML:
+    # жирный/курсив/ссылки остаются как в оригинале, а не скобками.
+    html_text = _append_signature_html(
+        (post.get("html") or html.escape(post.get("text", "").strip())).strip(), signature
+    )
     media_items = post.get("media", [])
     if len(media_items) > 1:
-        caption_parts = split_text(text, MAX_CAPTION_UNITS) if text else []
-        first_caption = caption_parts.pop(0) if caption_parts else None
+        if visible_units(html_text) <= MAX_CAPTION_UNITS:
+            first_caption, rest = html_text, []
+        else:
+            plain_parts = split_text(visible_text(html_text), MAX_CAPTION_UNITS)
+            first_caption, rest = plain_parts.pop(0), plain_parts
+        first_is_html = first_caption == html_text
         for offset in range(0, len(media_items), MEDIA_GROUP_SIZE):
             chunk = media_items[offset:offset + MEDIA_GROUP_SIZE]
             media_json = []
@@ -512,6 +618,8 @@ def publish_post(post, destination, signature=""):
                 }
                 if offset == 0 and index == 0 and first_caption:
                     entry["caption"] = first_caption
+                    if first_is_html:
+                        entry["parse_mode"] = "HTML"
                 media_json.append(entry)
             bot_request(
                 "sendMediaGroup",
@@ -519,11 +627,14 @@ def publish_post(post, destination, signature=""):
                 files=files,
                 timeout=60,
             )
-        for part in caption_parts:
+        for part in rest:
             bot_request("sendMessage", {"chat_id": destination, "text": part})
         return True
     if media_items:
-        caption_parts = split_text(text, MAX_CAPTION_UNITS) if text else []
+        if visible_units(html_text) <= MAX_CAPTION_UNITS:
+            caption_parts, is_html = [html_text] if html_text else [], True
+        else:
+            caption_parts, is_html = split_text(visible_text(html_text), MAX_CAPTION_UNITS) if html_text else [], False
         for index, media in enumerate(media_items):
             filename, binary_data = download_media(media)
             method = "sendVideo" if media["type"] == "video" else "sendPhoto"
@@ -531,6 +642,8 @@ def publish_post(post, destination, signature=""):
             data = {"chat_id": destination}
             if index == 0 and caption_parts:
                 data["caption"] = caption_parts.pop(0)
+                if is_html:
+                    data["parse_mode"] = "HTML"
             bot_request(
                 method,
                 data=data,
@@ -540,8 +653,15 @@ def publish_post(post, destination, signature=""):
         for part in caption_parts:
             bot_request("sendMessage", {"chat_id": destination, "text": part})
         return True
-    elif text:
-        for part in split_text(text, MAX_MESSAGE_UNITS):
-            bot_request("sendMessage", {"chat_id": destination, "text": part})
+    elif html_text:
+        if visible_units(html_text) <= MAX_MESSAGE_UNITS:
+            bot_request(
+                "sendMessage",
+                {"chat_id": destination, "text": html_text, "parse_mode": "HTML"},
+                timeout=30,
+            )
+        else:
+            for part in split_text(visible_text(html_text), MAX_MESSAGE_UNITS):
+                bot_request("sendMessage", {"chat_id": destination, "text": part})
         return True
     return False
