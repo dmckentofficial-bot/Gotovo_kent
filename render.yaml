@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: telegram-mini-app
+    name: prime-pro
     runtime: docker
     plan: free
     healthCheckPath: /health
