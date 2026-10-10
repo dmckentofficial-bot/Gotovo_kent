@@ -648,5 +648,89 @@ class MenuButtonTests(unittest.TestCase):
         self.assertEqual(menu["web_app"]["url"], "https://example.com/")
 
 
+class MtprotoTests(unittest.TestCase):
+    def test_map_entities_covers_main_types(self):
+        from telethon.tl import types as tl_types
+
+        from app import mtproto
+
+        entities = mtproto.map_entities([
+            tl_types.MessageEntityBold(offset=0, length=4),
+            tl_types.MessageEntityTextUrl(offset=5, length=6, url="https://example.org/"),
+            tl_types.MessageEntityCustomEmoji(offset=12, length=2, document_id=123),
+            tl_types.MessageEntitySpoiler(offset=15, length=3),
+        ])
+        by_type = {item["type"]: item for item in entities}
+        self.assertEqual(by_type["bold"]["offset"], 0)
+        self.assertEqual(by_type["text_link"]["url"], "https://example.org/")
+        self.assertEqual(by_type["custom_emoji"]["custom_emoji_id"], "123")
+        self.assertEqual(by_type["spoiler"]["length"], 3)
+
+    def test_map_buttons_keeps_url_only(self):
+        from telethon.tl import types as tl_types
+
+        from app import mtproto
+
+        url_button = tl_types.KeyboardButton(text="Купить", type=tl_types.InlineButtonTypeUrl(url="https://shop.example/item"))
+        cb_button = tl_types.KeyboardButton(text="Скрытая", type=tl_types.InlineButtonTypeCallback(data=b"1"))
+        markup = tl_types.ReplyInlineMarkup(rows=[tl_types.KeyboardButtonRow(buttons=[url_button, cb_button])])
+        result = mtproto.map_buttons(markup)
+        self.assertEqual(result, {"inline_keyboard": [[{"text": "Купить", "url": "https://shop.example/item"}]]})
+        self.assertIsNone(mtproto.map_buttons(None))
+
+    def test_group_posts_merges_album(self):
+        from app import mtproto
+
+        posts = [
+            {"id": "10", "text": "Обложка", "entities": [], "media": [{"type": "photo"}], "_mt_grouped": 99},
+            {"id": "11", "text": "", "entities": [], "media": [{"type": "photo"}], "_mt_grouped": 99},
+            {"id": "12", "text": "Одиночный", "entities": [], "media": [], "_mt_grouped": None},
+        ]
+        merged = mtproto.group_posts(posts)
+        self.assertEqual([p["id"] for p in merged], ["11", "12"])
+        album = merged[0]
+        self.assertEqual(len(album["media"]), 2)
+        self.assertEqual(album["text"], "Обложка")
+        self.assertEqual(album["_mt_group_ids"], ["10", "11"])
+
+    def test_split_with_entities_keeps_all_text(self):
+        content = "Начало " + ("слово со ссылкой " * 300) + "конец"
+        entities = [{"offset": 7, "length": 5, "type": "bold"}]
+        parts = telegram._split_with_entities(content, entities, telegram.MAX_MESSAGE_UNITS)
+        self.assertGreater(len(parts), 1)
+        self.assertEqual("".join(text for text, _ in parts), content)
+        first_text, first_ents = parts[0]
+        self.assertEqual(first_ents, entities)
+
+    def test_publish_rich_post_sends_entities_and_keyboard(self):
+        post = {
+            "text": "Новость дня",
+            "entities": [{"offset": 0, "length": 7, "type": "bold"}],
+            "reply_markup": {"inline_keyboard": [[{"text": "Читать", "url": "https://example.org/"}]]},
+            "media": [{"type": "photo", "filename": "orig.jpg", "data": b"bytes"}],
+        }
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch("app.telegram.requests.post", return_value=MessageTests()._bot_response()) as send:
+            with patch.object(telegram, "download_media", side_effect=AssertionError("байты уже есть")):
+                telegram.publish_post(dict(post), "@dest", "")
+
+        data = send.call_args.kwargs["data"]
+        self.assertEqual(json.loads(data["entities"] if "entities" in data else data["caption_entities"])[0]["type"], "bold")
+        self.assertIn("reply_markup", data)
+
+    def test_publish_poll_calls_send_poll(self):
+        post = {
+            "text": "",
+            "media": [],
+            "poll": {"question": "Лучший?", "options": ["Да", "Нет"], "is_anonymous": True},
+        }
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch("app.telegram.requests.post", return_value=MessageTests()._bot_response()) as send:
+            telegram.publish_post(dict(post), "@dest", "")
+
+        method = send.call_args.args[0].rsplit("/", 1)[-1]
+        self.assertEqual(method, "sendPoll")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -41,6 +41,22 @@
     filterMode: $("#filter-mode"),
     filterOptions: $("#filter-options"),
     accessSetup: $("#access-setup"),
+    // mtproto exact reading
+    mtStatusHint: $("#mt-status-hint"),
+    mtConnected: $("#mt-connected"),
+    mtUserLine: $("#mt-user-line"),
+    mtDisconnect: $("#mt-disconnect"),
+    mtForm: $("#mt-form"),
+    mtPhone: $("#mt-phone"),
+    mtApiId: $("#mt-api-id"),
+    mtApiHash: $("#mt-api-hash"),
+    mtCodeBlock: $("#mt-code-block"),
+    mtCode: $("#mt-code"),
+    mtPasswordBlock: $("#mt-password-block"),
+    mtPassword: $("#mt-password"),
+    mtStart: $("#mt-start"),
+    mtConfirm: $("#mt-confirm"),
+    mtSubmitPassword: $("#mt-submit-password"),
     save: $("#save"),
     test: $("#test"),
     // signature
@@ -988,6 +1004,108 @@
     if (password) showNotice("Пароль доступа изменён.", "success");
   });
 
+  /* ---------- MTProto exact reading ---------- */
+  async function refreshMtStatus() {
+    let info = null;
+    try { info = await api("/api/mt/status"); } catch (_) { return; }
+    if (!info) return;
+    const on = Boolean(info.authorized);
+    if (nodes.mtConnected) nodes.mtConnected.hidden = !on;
+    if (nodes.mtForm) nodes.mtForm.hidden = on;
+    if (on) {
+      if (nodes.mtUserLine) nodes.mtUserLine.textContent = `Подключено: ${info.user || "ваш аккаунт"}. Посты забираются дословно.`;
+      if (nodes.mtStatusHint) nodes.mtStatusHint.textContent = "Точное чтение включено: форматирование, кнопки, опросы и все медиа — как в оригинале.";
+    } else if (nodes.mtStatusHint) {
+      nodes.mtStatusHint.textContent = info.configured
+        ? "Данные введены. Получите код и завершите вход."
+        : "Обычное чтение видит только текст и фото из превью. Подключите свой Telegram — и посты будут забираться дословно: форматирование, кнопки, опросы, все медиа в оригинале.";
+    }
+  }
+
+  nodes.mtStart.addEventListener("click", async (event) => {
+    setBusy(event.currentTarget, true);
+    try {
+      const result = await api("/api/mt/start", {
+        method: "POST",
+        body: JSON.stringify({
+          phone: nodes.mtPhone.value.trim(),
+          api_id: nodes.mtApiId.value.trim(),
+          api_hash: nodes.mtApiHash.value.trim(),
+        }),
+      });
+      if (result.authorized) {
+        showNotice("MTProto уже подключён.", "success");
+      } else {
+        nodes.mtCodeBlock.hidden = false;
+        nodes.mtStart.hidden = true;
+        nodes.mtConfirm.hidden = false;
+        showNotice("Код отправлен в Telegram. Введите его ниже.", "success");
+      }
+      await refreshMtStatus();
+    } catch (error) {
+      showNotice(error.message, "error");
+    } finally {
+      setBusy(event.currentTarget, false);
+    }
+  });
+
+  nodes.mtConfirm.addEventListener("click", async (event) => {
+    setBusy(event.currentTarget, true);
+    try {
+      const result = await api("/api/mt/confirm", {
+        method: "POST",
+        body: JSON.stringify({ code: nodes.mtCode.value.trim() }),
+      });
+      if (result.need_password || result.authorized === false) {
+        nodes.mtPasswordBlock.hidden = false;
+        nodes.mtConfirm.hidden = true;
+        nodes.mtSubmitPassword.hidden = false;
+        showNotice("Нужен пароль двухэтапной аутентификации.", "");
+      } else {
+        nodes.mtCode.value = "";
+        showNotice(`Точное чтение включено${result.user ? `: ${result.user}` : ""}.`, "success");
+      }
+      await refreshMtStatus();
+    } catch (error) {
+      showNotice(error.message, "error");
+    } finally {
+      setBusy(event.currentTarget, false);
+    }
+  });
+
+  nodes.mtSubmitPassword.addEventListener("click", async (event) => {
+    setBusy(event.currentTarget, true);
+    try {
+      const result = await api("/api/mt/password", {
+        method: "POST",
+        body: JSON.stringify({ password: nodes.mtPassword.value }),
+      });
+      nodes.mtPassword.value = "";
+      showNotice(`Точное чтение включено${result.user ? `: ${result.user}` : ""}.`, "success");
+      await refreshMtStatus();
+    } catch (error) {
+      showNotice(error.message, "error");
+    } finally {
+      setBusy(event.currentTarget, false);
+    }
+  });
+
+  nodes.mtDisconnect.addEventListener("click", async () => {
+    haptic("light");
+    try {
+      await api("/api/mt/disconnect", { method: "POST" });
+      nodes.mtCodeBlock.hidden = true;
+      nodes.mtPasswordBlock.hidden = true;
+      nodes.mtStart.hidden = false;
+      nodes.mtConfirm.hidden = true;
+      nodes.mtSubmitPassword.hidden = true;
+      showNotice("Точное чтение отключено. Работает обычное чтение превью.", "success");
+      await refreshMtStatus();
+    } catch (error) {
+      showNotice(error.message, "error");
+    }
+  });
+
   /* ---------- settings events ---------- */
   nodes.addSource.addEventListener("click", () => {
     if (config.sources.length < MAX_SOURCES) {
@@ -1142,6 +1260,7 @@
       if (byPassword) hapticResult("success");
       await loadConfig();
       await loadBotSettings();
+      await refreshMtStatus();
       await refreshStatus();
     } catch (error) {
       nodes.app.hidden = false;

@@ -341,6 +341,91 @@ def text_units(text):
     return len(text.encode("utf-16-le")) // 2
 
 
+def _media_file(media):
+    """Готовит файл для отправки: метод, поле, имя, байты.
+
+    Байты либо уже есть (точный MTProto-путь, оригиналы), либо качаются
+    с CDN (скрапер). Тип определяет метод: кругляшки -> sendVideoNote,
+    голосовые -> sendVoice, GIF -> sendAnimation, стикеры -> sendSticker.
+    """
+    if media.get("data") is not None:
+        binary = media["data"]
+        filename = media.get("filename") or "file.bin"
+    else:
+        filename, binary = download_media(media)
+    kind = media.get("type")
+    mapping = {
+        "photo": ("sendPhoto", "photo"),
+        "video": ("sendVideo", "video"),
+        "gif": ("sendAnimation", "animation"),
+        "voice": ("sendVoice", "voice"),
+        "round": ("sendVideoNote", "video_note"),
+        "sticker": ("sendSticker", "sticker"),
+        "file": ("sendDocument", "document"),
+    }
+    method, field = mapping.get(kind, ("sendPhoto", "photo"))
+    return method, field, filename, binary
+
+
+def _split_with_entities(text, entities, limit):
+    """Делит текст по лимиту (UTF-16), раздавая entities по частям без потерь."""
+    if text_units(text) <= limit:
+        return [(text, list(entities or []))]
+    segments = []
+    start = 0
+    total = len(text)
+    while start < total:
+        end = start
+        units = 0
+        while end < total:
+            width = 2 if ord(text[end]) > 0xFFFF else 1
+            if units + width > limit:
+                break
+            units += width
+            end += 1
+        if end == start:
+            raise ValueError("Не удалось разделить сообщение в допустимый лимит Telegram.")
+        if end < total:
+            boundary = max(text.rfind("\n", start, end), text.rfind(" ", start, end))
+            if boundary >= start + limit // 2:
+                end = boundary + 1
+        start_units = len(text[:start].encode("utf-16-le")) // 2
+        end_units = len(text[:end].encode("utf-16-le")) // 2
+        kept = [
+            {**item, "offset": item.get("offset", 0) - start_units}
+            for item in (entities or [])
+            if item.get("offset", 0) >= start_units
+            and item.get("offset", 0) + item.get("length", 0) <= end_units
+        ]
+        segments.append((text[start:end], kept))
+        start = end
+    return segments
+
+
+def _send_poll(destination, poll, reply_markup, signature=""):
+    options = poll.get("options") or []
+    if not options:
+        raise ValueError("Опрос без вариантов ответа.")
+    payload = {
+        "chat_id": destination,
+        "question": poll.get("question", "")[:300],
+        "options": json.dumps(options[:10]),
+        "is_anonymous": poll.get("is_anonymous", True),
+    }
+    if poll.get("type") == "quiz":
+        payload["type"] = "quiz"
+        if poll.get("correct_option_id") is not None:
+            payload["correct_option_id"] = poll["correct_option_id"]
+        if poll.get("explanation"):
+            payload["explanation"] = poll["explanation"][:200]
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup)
+    bot_request("sendPoll", payload, timeout=30)
+    if (signature or "").strip():
+        bot_request("sendMessage", {"chat_id": destination, "text": signature.strip()}, timeout=30)
+    return True
+
+
 TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -590,35 +675,56 @@ def publish_post(post, destination, signature=""):
                 raise copy_exc from None
             post = enriched
 
-    # Перезаливка в полном объёме с сохранением форматирования (fallback
-    # и ручной вызов без привязки). HTML из парсера идёт с parse_mode=HTML:
-    # жирный/курсив/ссылки остаются как в оригинале, а не скобками.
-    html_text = _append_signature_html(
-        (post.get("html") or html.escape(post.get("text", "").strip())).strip(), signature
-    )
+    # Перезаливка в полном объёме (fallback и ручной вызов без привязки).
+    # Точный путь MTProto: plain text + entities + кнопки + опросы + все типы
+    # медиа. Путь скрапера: HTML + parse_mode (жирный/курсив/ссылки как в оригинале).
+    entities = post.get("entities") or []
+    reply_markup = post.get("reply_markup")
+    media_items = post.get("media", [])
+
+    def _markup():
+        return {"reply_markup": json.dumps(reply_markup)} if reply_markup else {}
+
+    if post.get("poll") and not media_items:
+        return _send_poll(destination, post["poll"], reply_markup, signature)
+
+    use_entities = bool(entities)
+    if use_entities:
+        full_text = _append_signature(post.get("text", "").strip(), signature)
+    else:
+        html_text = _append_signature_html(
+            (post.get("html") or html.escape(post.get("text", "").strip())).strip(), signature
+        )
     media_items = post.get("media", [])
     if len(media_items) > 1:
-        if visible_units(html_text) <= MAX_CAPTION_UNITS:
-            first_caption, rest = html_text, []
+        if use_entities:
+            parts = _split_with_entities(full_text, entities, MAX_CAPTION_UNITS)
+            first_caption, first_ents, rest = parts[0][0], parts[0][1], parts[1:]
+            first_is_html = False
+        elif visible_units(html_text) <= MAX_CAPTION_UNITS:
+            first_caption, first_ents, rest = html_text, [], []
+            first_is_html = True
         else:
             plain_parts = split_text(visible_text(html_text), MAX_CAPTION_UNITS)
-            first_caption, rest = plain_parts.pop(0), plain_parts
-        first_is_html = first_caption == html_text
+            first_caption, first_ents, rest = plain_parts.pop(0), [], [(p, []) for p in plain_parts]
+            first_is_html = False
         for offset in range(0, len(media_items), MEDIA_GROUP_SIZE):
             chunk = media_items[offset:offset + MEDIA_GROUP_SIZE]
             media_json = []
             files = {}
             for index, media in enumerate(chunk):
-                filename, binary_data = download_media(media)
+                _method, _field, filename, binary_data = _media_file(media)
                 field = f"media_{offset + index}"
                 files[field] = (filename, binary_data)
                 entry = {
-                    "type": "photo" if media["type"] == "photo" else "video",
+                    "type": "photo" if media.get("type") == "photo" else "video",
                     "media": f"attach://{field}",
                 }
                 if offset == 0 and index == 0 and first_caption:
                     entry["caption"] = first_caption
-                    if first_is_html:
+                    if first_ents:
+                        entry["caption_entities"] = json.dumps(first_ents)
+                    elif first_is_html:
                         entry["parse_mode"] = "HTML"
                 media_json.append(entry)
             bot_request(
@@ -627,22 +733,32 @@ def publish_post(post, destination, signature=""):
                 files=files,
                 timeout=60,
             )
-        for part in rest:
-            bot_request("sendMessage", {"chat_id": destination, "text": part})
+        for part, part_ents in rest:
+            payload = {"chat_id": destination, "text": part}
+            if part_ents:
+                payload["entities"] = json.dumps(part_ents)
+            bot_request("sendMessage", payload)
         return True
     if media_items:
-        if visible_units(html_text) <= MAX_CAPTION_UNITS:
-            caption_parts, is_html = [html_text] if html_text else [], True
+        if use_entities:
+            caption_segments = _split_with_entities(full_text, entities, MAX_CAPTION_UNITS) if full_text else []
+            is_html = False
+        elif visible_units(html_text) <= MAX_CAPTION_UNITS:
+            caption_segments = [(html_text, [])] if html_text else []
+            is_html = True
         else:
-            caption_parts, is_html = split_text(visible_text(html_text), MAX_CAPTION_UNITS) if html_text else [], False
+            caption_segments = [(p, []) for p in split_text(visible_text(html_text), MAX_CAPTION_UNITS)] if html_text else []
+            is_html = False
         for index, media in enumerate(media_items):
-            filename, binary_data = download_media(media)
-            method = "sendVideo" if media["type"] == "video" else "sendPhoto"
-            field = "video" if media["type"] == "video" else "photo"
-            data = {"chat_id": destination}
-            if index == 0 and caption_parts:
-                data["caption"] = caption_parts.pop(0)
-                if is_html:
+            method, field, filename, binary_data = _media_file(media)
+            data = {"chat_id": destination, **(_markup() if index == 0 else {})}
+            caption_allowed = method in {"sendPhoto", "sendVideo", "sendAnimation", "sendVoice", "sendDocument"}
+            if index == 0 and caption_segments and caption_allowed:
+                caption_text, caption_ents = caption_segments.pop(0)
+                data["caption"] = caption_text
+                if caption_ents:
+                    data["caption_entities"] = json.dumps(caption_ents)
+                elif is_html:
                     data["parse_mode"] = "HTML"
             bot_request(
                 method,
@@ -650,18 +766,25 @@ def publish_post(post, destination, signature=""):
                 files={field: (filename, binary_data)},
                 timeout=60,
             )
-        for part in caption_parts:
-            bot_request("sendMessage", {"chat_id": destination, "text": part})
+        for part, part_ents in caption_segments:
+            payload = {"chat_id": destination, "text": part}
+            if part_ents:
+                payload["entities"] = json.dumps(part_ents)
+            bot_request("sendMessage", payload)
         return True
-    elif html_text:
-        if visible_units(html_text) <= MAX_MESSAGE_UNITS:
-            bot_request(
-                "sendMessage",
-                {"chat_id": destination, "text": html_text, "parse_mode": "HTML"},
-                timeout=30,
-            )
-        else:
-            for part in split_text(visible_text(html_text), MAX_MESSAGE_UNITS):
-                bot_request("sendMessage", {"chat_id": destination, "text": part})
-        return True
-    return False
+    text_segments = (
+        _split_with_entities(full_text, entities, MAX_MESSAGE_UNITS)
+        if use_entities
+        else ([(html_text, [])] if visible_units(html_text) <= MAX_MESSAGE_UNITS
+              else [(p, []) for p in split_text(visible_text(html_text), MAX_MESSAGE_UNITS)])
+    ) if (full_text if use_entities else html_text) else []
+    for position, (part, part_ents) in enumerate(text_segments):
+        payload = {"chat_id": destination, "text": part}
+        if part_ents:
+            payload["entities"] = json.dumps(part_ents)
+        elif not use_entities:
+            payload["parse_mode"] = "HTML"
+        if position == 0:
+            payload.update(_markup())
+        bot_request("sendMessage", payload, timeout=30)
+    return bool(text_segments)

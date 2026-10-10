@@ -173,6 +173,39 @@
           </div>
         </div>
 
+        <div class="card">
+          <p class="eyebrow">ТОЧНОЕ ЧТЕНИЕ</p>
+          <h2 class="section-title">MTProto-режим</h2>
+          <p class="hint" id="mt-status-hint">Обычное чтение видит только текст и фото из превью. Подключите свой Telegram — и посты будут забираться дословно: форматирование, кнопки, опросы, все медиа в оригинале.</p>
+          <div id="mt-connected" hidden>
+            <p class="hint" id="mt-user-line"></p>
+            <div class="button-row">
+              <button id="mt-disconnect" class="button secondary" type="button">Отключить</button>
+            </div>
+          </div>
+          <div id="mt-form">
+            <label class="field-label" for="mt-phone">Номер телефона</label>
+            <input id="mt-phone" class="text-input" type="tel" autocomplete="off" placeholder="+7...">
+            <label class="field-label" for="mt-api-id">API ID (my.telegram.org → API development tools)</label>
+            <input id="mt-api-id" class="text-input" type="text" inputmode="numeric" autocomplete="off" placeholder="123456">
+            <label class="field-label" for="mt-api-hash">API Hash</label>
+            <input id="mt-api-hash" class="text-input" type="text" autocomplete="off" spellcheck="false" placeholder="…">
+            <div id="mt-code-block" hidden>
+              <label class="field-label" for="mt-code">Код из Telegram</label>
+              <input id="mt-code" class="text-input" type="text" inputmode="numeric" autocomplete="off" placeholder="12345">
+            </div>
+            <div id="mt-password-block" hidden>
+              <label class="field-label" for="mt-password">Пароль двухэтапной аутентификации</label>
+              <input id="mt-password" class="text-input" type="password" autocomplete="off" placeholder="…">
+            </div>
+            <div class="button-row">
+              <button id="mt-start" class="button primary" type="button">Получить код</button>
+              <button id="mt-confirm" class="button primary" type="button" hidden>Войти по коду</button>
+              <button id="mt-submit-password" class="button primary" type="button" hidden>Войти с паролем</button>
+            </div>
+          </div>
+        </div>
+
         <div class="actions">
           <button id="save" class="button primary" type="button">Сохранить настройки</button>
           <button id="test" class="button secondary" type="button">Проверить подключение</button>

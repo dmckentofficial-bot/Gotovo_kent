@@ -47,9 +47,27 @@ def poll_once():
         database.set_state("last_error", f"Канал назначения: {exc}")
         return
 
+    use_exact = False
+    try:
+        from . import mtproto as mt_reader
+        use_exact = mt_reader.available()
+    except Exception:  # noqa: BLE001 - без точного чтения работаем через скрапер
+        use_exact = False
+
     for source in config["sources"]:
         try:
-            posts = telegram.fetch_public_posts(source)
+            if use_exact:
+                try:
+                    posts = mt_reader.fetch_recent(source, limit=20)
+                    exact_mode = True
+                except Exception as exc:
+                    note = f"@{source}: точное чтение недоступно ({exc}), читаю превью."
+                    database.set_state("last_error", note)
+                    posts = telegram.fetch_public_posts(source)
+                    exact_mode = False
+            else:
+                posts = telegram.fetch_public_posts(source)
+                exact_mode = False
             cursor = database.get_cursor(source)
             if cursor is None:
                 latest_id = max(int(post["id"]) for post in posts)
@@ -60,23 +78,44 @@ def poll_once():
                 (post for post in posts if int(post["id"]) > cursor),
                 key=lambda post: int(post["id"]),
             )
+            if exact_mode:
+                try:
+                    new_posts = mt_reader.group_posts(new_posts)
+                except Exception:  # noqa: BLE001
+                    pass
             for post in new_posts:
                 post_id = int(post["id"])
-                if database.already_forwarded(source, post.get("id", "")):
+                member_ids = [post["id"], *(post.get("_mt_group_ids") or [])]
+                if any(database.already_forwarded(source, member) for member in member_ids):
                     database.set_cursor(source, post_id)
                     continue
-                # Для точного фильтра догружаем полный текст отдельного поста:
-                # в общей ленте иногда лежит обрезанный snippet.
-                try:
-                    full = telegram.fetch_single_post(source, post_id)
-                    if full.get("text"):
-                        post["text"] = full["text"]
-                    if full.get("html"):
-                        post["html"] = full["html"]
-                    if full.get("media"):
-                        post["media"] = full["media"]
-                except RuntimeError:
-                    pass
+                if not exact_mode:
+                    # Для точного фильтра догружаем полный текст отдельного поста:
+                    # в общей ленте иногда лежит обрезанный snippet.
+                    try:
+                        full = telegram.fetch_single_post(source, post_id)
+                        if full.get("text"):
+                            post["text"] = full["text"]
+                        if full.get("html"):
+                            post["html"] = full["html"]
+                        if full.get("media"):
+                            post["media"] = full["media"]
+                    except RuntimeError:
+                        pass
+                else:
+                    # Оригиналы медиа качаем только для новых постов.
+                    try:
+                        for item in post.get("media", []):
+                            if item.get("data") is None and item.get("message_ref"):
+                                filename, blob = mt_reader.download_media_bytes(
+                                    source, int(item["message_ref"])
+                                )
+                                item["data"] = blob
+                                item["filename"] = filename
+                    except Exception as exc:
+                        database.write_history(post, source, "error", f"Не удалось скачать медиа: {exc}")
+                        database.set_state("last_error", f"@{source}, пост {post_id}: {exc}")
+                        break
                 if not _matches_filter(post.get("text", ""), config):
                     database.write_history(post, source, "filtered")
                     database.set_cursor(source, post_id)

@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 # Переменные окружения из .env (локально), в облаке — из настроек сервиса.
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-from . import auth, database, pin, telegram, worker
+from . import auth, database, mtproto, pin, telegram, worker
 
 
 logger = logging.getLogger("app.forwarder")
@@ -41,6 +41,20 @@ class ServicePayload(BaseModel):
 class BotPayload(BaseModel):
     token: str = Field(default="", max_length=200)
     admin_id: str = Field(default="", max_length=64)
+
+
+class MtStartPayload(BaseModel):
+    phone: str = Field(default="", max_length=32)
+    api_id: str = Field(default="", max_length=16)
+    api_hash: str = Field(default="", max_length=128)
+
+
+class MtCodePayload(BaseModel):
+    code: str = Field(default="", max_length=16)
+
+
+class MtPasswordPayload(BaseModel):
+    password: str = Field(default="", max_length=256)
 
 
 class SignaturePayload(BaseModel):
@@ -216,6 +230,44 @@ def get_bot(_user=Depends(require_admin)):
         "token_set": bool(token),
         "token_hint": f"…{token[-4:]}" if len(token) >= 4 else "",
     }
+
+
+@app.get("/api/mt/status")
+def mt_status(_user=Depends(require_admin)):
+    return mtproto.status()
+
+
+@app.post("/api/mt/start")
+def mt_start(payload: MtStartPayload, _user=Depends(require_admin)):
+    try:
+        return mtproto.start_login(payload.phone, payload.api_id, payload.api_hash)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/mt/confirm")
+def mt_confirm(payload: MtCodePayload, _user=Depends(require_admin)):
+    if not payload.code.strip():
+        raise HTTPException(status_code=422, detail="Введите код из Telegram.")
+    try:
+        return mtproto.confirm_code(payload.code)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/mt/password")
+def mt_password(payload: MtPasswordPayload, _user=Depends(require_admin)):
+    if not payload.password:
+        raise HTTPException(status_code=422, detail="Введите пароль двухэтапной аутентификации.")
+    try:
+        return mtproto.submit_password(payload.password)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/mt/disconnect")
+def mt_disconnect(_user=Depends(require_admin)):
+    return mtproto.disconnect()
 
 
 @app.put("/api/bot")
