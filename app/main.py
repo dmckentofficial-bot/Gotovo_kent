@@ -74,12 +74,17 @@ def require_admin(
     x_admin_key: str | None = Header(default=None),
 ):
     key = (x_admin_key or "").strip()
+    if auth.check_admin_key(key):
+        # Правильный пароль работает всегда и снимает блокировку.
+        database.set_state("key_fails", "0")
+        database.set_state("key_locked_until", "0")
+        return auth.authenticate(x_telegram_init_data or "", key)
     if key and _key_locked():
         _, until = _key_fail_state()
         wait = max(0, int(until - time.time()))
         raise HTTPException(status_code=429, detail=f"Слишком много неверных попыток. Подождите {wait} с.")
     try:
-        user = auth.authenticate(x_telegram_init_data or "", key)
+        return auth.authenticate(x_telegram_init_data or "", key)
     except PermissionError as exc:
         if key:
             _register_key_fail()
@@ -87,10 +92,6 @@ def require_admin(
         raise HTTPException(
             status_code=401, detail=str(exc), headers={"X-Requires-Auth": "1"}
         ) from exc
-    if key:
-        database.set_state("key_fails", "0")
-        database.set_state("key_locked_until", "0")
-    return user
 
 
 def _pin_gate():

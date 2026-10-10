@@ -331,12 +331,10 @@ class AdminKeyLockoutTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as ctx:
                 main.require_admin("", "0000")
             self.assertEqual(ctx.exception.status_code, 429)
-            with self.assertRaises(HTTPException) as ctx:
-                main.require_admin("", "4322")
-            self.assertEqual(ctx.exception.status_code, 429)
-            database.set_state("key_locked_until", "0")
+            # правильный пароль работает даже при блокировке
             user = main.require_admin("", "4322")
-        self.assertEqual(user["auth_method"], "key")
+            self.assertEqual(user["auth_method"], "key")
+            self.assertEqual(database.get_state("key_locked_until"), "0")
 
 
 class DatabaseTests(unittest.TestCase):

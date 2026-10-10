@@ -44,10 +44,14 @@ def validate_init_data(init_data):
     return user
 
 
+def check_admin_key(admin_key):
+    expected = os.environ.get("ADMIN_KEY", "").strip()
+    return bool(expected and admin_key and hmac.compare_digest(str(admin_key), expected))
+
+
 def authenticate(init_data, admin_key=""):
     """Доступ разрешён либо по данным Telegram, либо по паролю доступа (ADMIN_KEY)."""
-    expected = os.environ.get("ADMIN_KEY", "").strip()
-    if expected and admin_key and hmac.compare_digest(str(admin_key), expected):
+    if check_admin_key(admin_key):
         admin_id = os.environ.get("ADMIN_TELEGRAM_ID", "").strip()
         return {
             "id": int(admin_id) if admin_id.isdigit() else admin_id,
