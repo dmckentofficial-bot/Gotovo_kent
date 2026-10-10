@@ -731,6 +731,25 @@ class MtprotoTests(unittest.TestCase):
         method = send.call_args.args[0].rsplit("/", 1)[-1]
         self.assertEqual(method, "sendPoll")
 
+    def test_fill_test_keys_stores_public_credentials(self):
+        import tempfile
+
+        from app import database, mtproto
+
+        tmp_dir = tempfile.TemporaryDirectory()
+        original_path = database.DATABASE_PATH
+        try:
+            database.DATABASE_PATH = Path(tmp_dir.name) / "test.sqlite3"
+            database.initialize()
+            result = mtproto.fill_test_keys()
+            self.assertEqual(database.get_state("mt_api_id"), mtproto.TEST_API_ID)
+            self.assertEqual(database.get_state("mt_api_hash"), mtproto.TEST_API_HASH)
+            self.assertEqual(result["api_id"], mtproto.TEST_API_ID)
+            self.assertFalse(mtproto.available())
+        finally:
+            database.DATABASE_PATH = original_path
+            tmp_dir.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()

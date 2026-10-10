@@ -270,6 +270,11 @@ def mt_disconnect(_user=Depends(require_admin)):
     return mtproto.disconnect()
 
 
+@app.post("/api/mt/testkeys")
+def mt_testkeys(_user=Depends(require_admin)):
+    return mtproto.fill_test_keys()
+
+
 @app.put("/api/bot")
 def put_bot(payload: BotPayload, _user=Depends(require_admin)):
     new_token = payload.token.strip()

@@ -36,6 +36,13 @@ MAX_PHOTO_BYTES = 10 * 1024 * 1024
 MAX_VIDEO_BYTES = 49 * 1024 * 1024
 MAX_FILE_BYTES = 49 * 1024 * 1024
 
+# Публичные тестовые ключи из примеров TDLib (опубликованы самим Telegram
+# для разработчиков). Если my.telegram.org недоступен — их достаточно, чтобы
+# войти со СВОЕГО номера и читать СВОИ каналы: данные сессии всё равно ваши.
+# Минус: общие ключи иногда упираются в лимиты — тогда заведите личные.
+TEST_API_ID = "94575"
+TEST_API_HASH = "a3406de8d171bb422bb6ddd78cc7bbbc0"
+
 
 # ---------- собственный поток с event loop (Telethon нельзя дёргать из чужих потоков) ----------
 
@@ -83,6 +90,17 @@ def get_credentials():
 def is_configured():
     creds = get_credentials()
     return bool(creds["api_id"] and creds["api_hash"] and creds["phone"])
+
+
+def fill_test_keys():
+    """Подставляет публичные тестовые ключи (без my.telegram.org).
+
+    Возвращает подсказку для интерфейса. Телефон пользователь всё равно
+    вводит свой, код приходит на его номер, сессия — его.
+    """
+    database.set_state("mt_api_id", TEST_API_ID)
+    database.set_state("mt_api_hash", TEST_API_HASH)
+    return {"api_id": TEST_API_ID, "api_hash_hint": f"…{TEST_API_HASH[-4:]}"}
 
 
 async def _get_client():

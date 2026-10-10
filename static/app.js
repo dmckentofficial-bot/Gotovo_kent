@@ -57,6 +57,7 @@
     mtStart: $("#mt-start"),
     mtConfirm: $("#mt-confirm"),
     mtSubmitPassword: $("#mt-submit-password"),
+    mtTestkeys: $("#mt-testkeys"),
     save: $("#save"),
     test: $("#test"),
     // signature
@@ -1022,8 +1023,20 @@
     }
   }
 
-  nodes.mtStart.addEventListener("click", async (event) => {
-    setBusy(event.currentTarget, true);
+  nodes.mtTestkeys.addEventListener("click", async () => {
+    haptic("light");
+    try {
+      const result = await api("/api/mt/testkeys", { method: "POST" });
+      nodes.mtApiId.value = result.api_id || "";
+      nodes.mtApiHash.value = "";
+      nodes.mtApiHash.placeholder = `общий ключ ${result.api_hash_hint || ""}`;
+      showNotice("Подставлены общие тестовые ключи. Введите свой номер и нажмите «Получить код».", "success");
+    } catch (error) {
+      showNotice(error.message, "error");
+    }
+  });
+
+  nodes.mtStart.addEventListener("click", async (event) => {    setBusy(event.currentTarget, true);
     try {
       const result = await api("/api/mt/start", {
         method: "POST",
