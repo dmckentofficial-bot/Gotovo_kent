@@ -845,6 +845,149 @@ class DirectTests(unittest.TestCase):
         self.assertNotIn("copyMessage", sent)
         self.assertEqual(database.recent_history(), [])
 
+
+class BotCommandsTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+
+        from app import database
+
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.original_path = database.DATABASE_PATH
+        database.DATABASE_PATH = Path(self.tmp_dir.name) / "test.sqlite3"
+        database.initialize()
+        database.set_config({
+            "sources": ["one"], "destination": "@destination", "filter_enabled": False,
+            "filter_terms": "", "filter_mode": "any", "enabled": False,
+        })
+        database.set_state("admin_telegram_id", "777")
+
+    def tearDown(self):
+        from app import database
+
+        database.DATABASE_PATH = self.original_path
+        self.tmp_dir.cleanup()
+
+    def _updates(self, messages):
+        return [
+            {"update_id": 200 + index, "message": message}
+            for index, message in enumerate(messages)
+        ]
+
+    def _updates(self, messages):
+        return [
+            {"update_id": 200 + index, "message": message}
+            for index, message in enumerate(messages)
+        ]
+
+    def _drain(self, texts, bot_request):
+        from app import telegram, worker
+
+        messages = [
+            {"message_id": 10 + index, "text": text,
+             "chat": {"id": 777, "type": "private"}, "from": {"id": 777}}
+            for index, text in enumerate(texts)
+        ]
+
+        def fake_bot(method, data=None, files=None, timeout=30):
+            if method == "getUpdates":
+                return self._updates(messages)
+            return bot_request(method, data)
+
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "bot_request", side_effect=fake_bot):
+            worker.drain_direct_messages()
+
+    def test_add_list_delete_source(self):
+        from app import database
+
+        answers = []
+
+        def bot_request(method, data):
+            answers.append(data.get("text", ""))
+            return {"message_id": 1}
+
+        self._drain(["/add https://t.me/twochan", "/list", "/del 1", "/list"], bot_request)
+        self.assertIn("@twochan добавлен", answers[0])
+        self.assertIn("@one", answers[1])
+        self.assertIn("@twochan", answers[1])
+        self.assertIn("@one убран", answers[2])
+        self.assertNotIn("@one", answers[3])
+        self.assertIn("@twochan", answers[3])
+        self.assertEqual(database.get_config()["sources"], ["twochan"])
+
+    def test_add_rejects_garbage_and_duplicates(self):
+        answers = []
+
+        def bot_request(method, data):
+            answers.append(data.get("text", ""))
+            return {"message_id": 1}
+
+        self._drain(["/add not a channel!!", "/add @one"], bot_request)
+        self.assertTrue(answers[0])
+        self.assertIn("уже в списке", answers[1])
+
+    def test_destination_is_normalized(self):
+        from app import database
+
+        def bot_request(method, data):
+            return {"message_id": 1}
+
+        self._drain(["/dest https://t.me/somechannel"], bot_request)
+        self.assertEqual(database.get_config()["destination"], "@somechannel")
+
+    def test_on_off_and_status(self):
+        from app import database
+
+        answers = []
+
+        def bot_request(method, data):
+            answers.append(data.get("text", ""))
+            return {"message_id": 1}
+
+        self._drain(["/off", "/status", "/on", "/status"], bot_request)
+        self.assertIn("остановлена", answers[0].lower())
+        self.assertIn("выключена", answers[1].lower())
+        self.assertIn("включена", answers[2].lower())
+        self.assertTrue(database.get_config()["enabled"])
+
+    def test_start_sends_mini_app_keyboard(self):
+        payloads = []
+
+        def bot_request(method, data):
+            if method == "sendMessage":
+                payloads.append(data)
+            return {"message_id": 1}
+
+        with patch.dict("os.environ", {"APP_URL": "https://example.com"}):
+            self._drain(["/start"], bot_request)
+
+        self.assertEqual(len(payloads), 1)
+        markup = json.loads(payloads[0]["reply_markup"])
+        button = markup["keyboard"][0][0]
+        self.assertEqual(button["web_app"]["url"], "https://example.com/")
+
+    def test_stranger_command_gets_no_answer(self):
+        from app import telegram, worker
+
+        message = {
+            "message_id": 50, "text": "/status",
+            "chat": {"id": 999, "type": "private"}, "from": {"id": 999},
+        }
+        sent = []
+
+        def fake_bot(method, data=None, files=None, timeout=30):
+            if method == "getUpdates":
+                return self._updates([message])
+            sent.append(method)
+            return {"message_id": 1}
+
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "bot_request", side_effect=fake_bot):
+            worker.drain_direct_messages()
+
+        self.assertEqual(sent, [])
+
     def test_start_command_answers_with_help(self):
         from app import telegram, worker
 

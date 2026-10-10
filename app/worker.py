@@ -16,9 +16,20 @@ DIRECT_SOURCE = "direct"
 HELP_TEXT = (
     "Я принимаю пересланные посты и публикую их в канал назначения один в один: "
     "текст, фото и видео в оригинале, кнопки.\n\n"
-    "Просто перешлите мне любой пост из любого канала.\n"
-    "Команды: /start — помощь, /id — ваш Telegram ID."
+    "Просто перешлите мне любой пост из любого канала.\n\n"
+    "Команды:\n"
+    "/status — состояние пересылки\n"
+    "/stats — счётчики\n"
+    "/on и /off — включить/выключить\n"
+    "/list — источники и назначение\n"
+    "/add канал — добавить источник\n"
+    "/del канал — убрать источник\n"
+    "/dest канал — сменить назначение\n"
+    "/test — проверить подключение\n"
+    "/id — ваш Telegram ID"
 )
+
+MAX_SOURCES = 5
 
 
 def _owner_id():
@@ -27,6 +38,176 @@ def _owner_id():
         return int(raw)
     except (TypeError, ValueError):
         return None
+
+
+def _app_url():
+    return (os.environ.get("APP_URL") or os.environ.get("RENDER_EXTERNAL_URL", "")).strip().rstrip("/")
+
+
+def _mini_app_keyboard():
+    """Клавиатура с кнопкой Mini App (рядом с полем ввода)."""
+    url = _app_url()
+    if not url:
+        return None
+    return {"keyboard": [[{"text": "📱 Открыть приложение", "web_app": {"url": f"{url}/"}}]],
+            "resize_keyboard": True, "is_persistent": True}
+
+
+def _answer_private(chat_id, text, keyboard=False):
+    try:
+        payload = {"chat_id": chat_id, "text": text}
+        if keyboard:
+            markup = _mini_app_keyboard()
+            if markup:
+                payload["reply_markup"] = json.dumps(markup)
+        telegram.bot_request("sendMessage", payload, timeout=30)
+    except RuntimeError:
+        pass
+
+
+def _save_sources(sources):
+    config = database.get_config()
+    config["sources"] = sources
+    database.set_config(config)
+    return config
+
+
+def _cmd_status():
+    config = database.get_config()
+    state = "включена" if config.get("enabled") else "выключена"
+    last_error = database.get_state("last_error", "")
+    lines = [
+        f"Пересылка: {state}.",
+        f"Источников: {len(config.get('sources', []))}.",
+        f"Назначение: {config.get('destination') or 'не задано'}.",
+    ]
+    if last_error:
+        lines.append(f"Ошибка: {last_error}")
+    else:
+        lines.append("Ошибок нет.")
+    return "\n".join(lines)
+
+
+def _cmd_stats():
+    stats = database.history_stats()
+    return (
+        f"Переслано: {stats['forwarded']}\n"
+        f"Отфильтровано: {stats['filtered']}\n"
+        f"Пропущено: {stats['skipped']}\n"
+        f"Ошибок: {stats['errors']}\n"
+        f"Всего событий: {stats['total']}"
+    )
+
+
+def _cmd_set_enabled(enabled):
+    config = database.get_config()
+    if enabled and (not config.get("sources") or not config.get("destination")):
+        return "Сначала задайте источники и канал назначения: /add, /dest."
+    config["enabled"] = enabled
+    database.set_config(config)
+    return "Пересылка включена." if enabled else "Пересылка остановлена."
+
+
+def _cmd_list():
+    config = database.get_config()
+    sources = config.get("sources") or []
+    lines = ["Источники:"]
+    lines.extend(f"{index}. @{name}" for index, name in enumerate(sources, 1))
+    if not sources:
+        lines.append("— пусто —")
+    lines.append(f"Назначение: {config.get('destination') or 'не задано'}.")
+    return "\n".join(lines)
+
+
+def _cmd_add(argument):
+    if not argument:
+        return "Использование: /add @канал или ссылку t.me."
+    config = database.get_config()
+    sources = list(config.get("sources") or [])
+    raw = argument.strip().lstrip("@").casefold()
+    if raw in {value.casefold() for value in sources}:
+        return f"@{argument.strip().lstrip('@')} уже в списке."
+    try:
+        username = telegram.normalize_channel(argument)
+    except ValueError as exc:
+        return str(exc)
+    if username.casefold() in {value.casefold() for value in sources}:
+        return f"@{username} уже в списке."
+    if len(sources) >= MAX_SOURCES:
+        return f"Больше {MAX_SOURCES} источников нельзя."
+    sources.append(username)
+    _save_sources(sources)
+    return f"@{username} добавлен. Всего: {len(sources)}."
+
+
+def _cmd_delete(argument):
+    if not argument:
+        return "Использование: /del @канал или номер из /list."
+    config = database.get_config()
+    sources = list(config.get("sources") or [])
+    target = argument.strip()
+    if target.isdigit():
+        index = int(target) - 1
+        if 0 <= index < len(sources):
+            removed = sources.pop(index)
+            _save_sources(sources)
+            return f"@{removed} убран."
+        return "Нет источника с таким номером."
+    try:
+        username = telegram.normalize_channel(target)
+    except ValueError as exc:
+        return str(exc)
+    for value in sources:
+        if value.casefold() == username.casefold():
+            sources.remove(value)
+            _save_sources(sources)
+            return f"@{username} убран."
+    return f"@{username} нет в списке."
+
+
+def _cmd_destination(argument):
+    if not argument:
+        return "Использование: /dest @канал или ссылку t.me."
+    try:
+        destination = telegram.normalize_destination(argument)
+    except ValueError as exc:
+        return str(exc)
+    config = database.get_config()
+    config["destination"] = destination
+    database.set_config(config)
+    return f"Канал назначения: {destination}."
+
+
+def _cmd_test():
+    try:
+        result = validate_configuration()
+    except (RuntimeError, ValueError) as exc:
+        return f"Проверка не пройдена: {exc}"
+    lines = [f"Бот: @{result.get('bot')}", f"Назначение: {result.get('destination')}"]
+    for item in result.get("sources", []):
+        lines.append(f"@{item['source']}: доступен ({item['posts']} постов)")
+    return "\n".join(lines)
+
+
+def _handle_owner_command(text):
+    """Команда владельца -> текст ответа (пусто = не команда)."""
+    parts = text.strip().split(None, 1)
+    command = parts[0].split("@")[0].lower()
+    argument = parts[1].strip() if len(parts) > 1 else ""
+    handlers = {
+        "/help": lambda: HELP_TEXT,
+        "/status": _cmd_status,
+        "/stats": _cmd_stats,
+        "/on": lambda: _cmd_set_enabled(True),
+        "/off": lambda: _cmd_set_enabled(False),
+        "/list": _cmd_list,
+        "/add": lambda: _cmd_add(argument),
+        "/del": lambda: _cmd_delete(argument),
+        "/dest": lambda: _cmd_destination(argument),
+        "/test": _cmd_test,
+    }
+    handler = handlers.get(command)
+    return handler() if handler else ""
 
 
 def _direct_media_label(message):
@@ -39,13 +220,6 @@ def _direct_media_label(message):
         if key in message:
             kinds.append(label)
     return kinds
-
-
-def _answer_private(chat_id, text):
-    try:
-        telegram.bot_request("sendMessage", {"chat_id": chat_id, "text": text}, timeout=30)
-    except RuntimeError:
-        pass
 
 
 def drain_direct_messages():
@@ -93,12 +267,17 @@ def drain_direct_messages():
             continue
         text = message.get("text", "")
         if text.startswith("/start"):
-            _answer_private(chat.get("id"), HELP_TEXT)
+            _answer_private(chat.get("id"), HELP_TEXT, keyboard=True)
             continue
         if text.startswith("/id"):
             _answer_private(chat.get("id"), f"Ваш Telegram ID: {sender.get('id')}")
             continue
         if owner_id is not None and sender.get("id") != owner_id:
+            continue
+        if text.startswith("/"):
+            answer = _handle_owner_command(text)
+            if answer:
+                _answer_private(chat.get("id"), answer)
             continue
         preview = {
             "id": str(message_id),
