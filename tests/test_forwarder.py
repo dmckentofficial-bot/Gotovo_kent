@@ -369,19 +369,37 @@ class RetryTests(unittest.TestCase):
         def json(self):
             return self.payload
 
-    def test_retries_on_429_then_succeeds(self):
+    def setUp(self):
+        self._flood_before = telegram._flood_until
+        telegram._flood_until = 0.0
+
+    def tearDown(self):
+        telegram._flood_until = self._flood_before
+
+    def test_flood_fails_fast_without_retry(self):
         responses = iter([
-            self.Response({"ok": False, "error_code": 429, "description": "Too Many Requests", "parameters": {"retry_after": 1}}, status=429),
+            self.Response({"ok": False, "error_code": 429, "description": "Too Many Requests", "parameters": {"retry_after": 30}}, status=429),
             self.Response({"ok": True, "result": {"id": 1}}),
         ])
         with patch.object(telegram, "BOT_TOKEN", "123:test"), \
              patch("app.telegram.requests.post", side_effect=lambda *args, **kwargs: next(responses)) as send, \
              patch("app.telegram.time.sleep") as sleep:
-            result = telegram.bot_request("getMe")
+            with self.assertRaises(RuntimeError):
+                telegram.bot_request("getMe")
 
-        self.assertEqual(result["id"], 1)
-        self.assertEqual(send.call_count, 2)
-        sleep.assert_called_once()
+        # повторного запроса в сеть не было, спать тоже не ложились
+        self.assertEqual(send.call_count, 1)
+        sleep.assert_not_called()
+        self.assertGreater(telegram._flood_until, 0)
+
+    def test_flood_circuit_blocks_next_calls(self):
+        telegram._flood_until = 9999999999.0
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch("app.telegram.requests.post") as send:
+            with self.assertRaisesRegex(RuntimeError, "retry after"):
+                telegram.bot_request("getMe")
+
+        send.assert_not_called()
 
     def test_retries_on_5xx_then_succeeds(self):
         responses = iter([

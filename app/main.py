@@ -255,28 +255,29 @@ async def lifespan(_app):
             database.migrate_legacy_to(database.user_key_for(owner_id))
     except Exception as exc:  # noqa: BLE001 - без миграции работаем как раньше
         logger.warning("Миграция данных владельца не удалась: %s", exc)
-    try:
-        worker.sync_bot_commands()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Команды бота не обновлены: %s", exc)
 
     app_url = os.environ.get("APP_URL") or os.environ.get("RENDER_EXTERNAL_URL", "")
     if telegram.BOT_TOKEN and app_url and admin_id:
         try:
             bot = telegram.bot_request("getMe")
             database.set_state("bot_username", bot.get("username", ""))
-            # Кнопка по умолчанию обязательна; личная кнопка владельца —
-            # best-effort (ID может принадлежать удалённому аккаунту).
-            worker.configure_menu_button(app_url, None)
-            try:
-                admin_chat = int(admin_id)
-            except ValueError:
-                admin_chat = None
-            if admin_chat is not None:
+            # Кнопку не дёргаем без нужды: лишние вызовы роняют флуд-лимит.
+            # (заодно не будим 429 на каждом рестарте)
+            menu_url = database.get_state("menu_url", "")
+            if menu_url != app_url.rstrip("/"):
+                # Кнопка по умолчанию обязательна; личная кнопка владельца —
+                # best-effort (ID может принадлежать удалённому аккаунту).
+                worker.configure_menu_button(app_url, None)
                 try:
-                    worker.configure_menu_button(app_url, admin_chat)
-                except RuntimeError as exc:
-                    logger.warning("Личная кнопка меню не обновлена: %s", exc)
+                    admin_chat = int(admin_id)
+                except ValueError:
+                    admin_chat = None
+                if admin_chat is not None:
+                    try:
+                        worker.configure_menu_button(app_url, admin_chat)
+                    except RuntimeError as exc:
+                        logger.warning("Личная кнопка меню не обновлена: %s", exc)
+                database.set_state("menu_url", app_url.rstrip("/"))
             database.set_state("menu_error", "")
         except RuntimeError as exc:
             database.set_state("menu_error", str(exc))
@@ -418,6 +419,7 @@ def put_bot(payload: BotPayload, _user=Depends(require_admin)):
                     worker.configure_menu_button(app_url, admin_chat)
                 except RuntimeError as exc:
                     logger.warning("Личная кнопка меню не обновлена: %s", exc)
+            database.set_state("menu_url", app_url.rstrip("/"))
             database.set_state("menu_error", "")
         except RuntimeError as exc:
             database.set_state("menu_error", str(exc))

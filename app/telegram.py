@@ -24,6 +24,15 @@ MEDIA_GROUP_SIZE = 10
 MEDIA_HOSTS = ("telesco.pe", "telegram.org", "telegram-cdn.org")
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 
+# Прерыватель флуда: пока не истёк retry_after от Telegram, запросы не уходят
+# в сеть, а сразу падают с понятной ошибкой (иначе стартап виснет минутами).
+_flood_until = 0.0
+
+
+def _flood_wait_left():
+    left = _flood_until - time.time()
+    return int(left) if left > 0 else 0
+
 
 def get_bot_token():
     """Текущий токен бота (может меняться из интерфейса без перезапуска сервера)."""
@@ -39,8 +48,12 @@ def set_bot_token(token):
 
 
 def _bot_request(method, data=None, files=None, timeout=30, max_attempts=4):
+    global _flood_until
     if not get_bot_token():
         raise RuntimeError("На сервере не задан TELEGRAM_BOT_TOKEN.")
+    wait_left = _flood_wait_left()
+    if wait_left > 0:
+        raise RuntimeError(f"Telegram Bot API (429): Too Many Requests: retry after {wait_left}")
 
     def sleep_backoff(attempt, retry_after=None):
         if retry_after:
@@ -72,11 +85,16 @@ def _bot_request(method, data=None, files=None, timeout=30, max_attempts=4):
             return payload["result"]
         code = payload.get("error_code", response.status_code)
         description = payload.get("description", "неизвестная ошибка")
-        if code == 429 or (code >= 500 and attempt < max_attempts - 1):
-            retry_after = (payload.get("parameters") or {}).get("retry_after")
-            if attempt == max_attempts - 1:
-                raise RuntimeError(f"Telegram Bot API (429): {description}")
-            sleep_backoff(attempt, retry_after if code == 429 else None)
+        if code == 429:
+            # По флуду не повторяем: сразу запоминаем паузу и выходим.
+            try:
+                retry_after = (payload.get("parameters") or {}).get("retry_after")
+                _flood_until = time.time() + max(int(retry_after or 0), 1)
+            except (TypeError, ValueError):
+                pass
+            raise RuntimeError(f"Telegram Bot API (429): {description}")
+        if code >= 500 and attempt < max_attempts - 1:
+            sleep_backoff(attempt)
             continue
         raise RuntimeError(f"Telegram Bot API ({code}): {description}")
 
