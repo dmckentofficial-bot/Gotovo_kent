@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -9,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, database, telegram, worker
+from . import auth, database, pin, telegram, worker
 
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -29,11 +30,49 @@ class ServicePayload(BaseModel):
     enabled: bool
 
 
+class SignaturePayload(BaseModel):
+    enabled: bool
+    text: str = Field(default="", max_length=1000)
+
+
+class PinPayload(BaseModel):
+    pin: str = Field(pattern=pin.PIN_PATTERN)
+
+
+class PinChangePayload(BaseModel):
+    current_pin: str = Field(pattern=pin.PIN_PATTERN)
+    pin: str = Field(pattern=pin.PIN_PATTERN)
+
+
 def require_admin(x_telegram_init_data: str | None = Header(default=None)):
     try:
         return auth.validate_init_data(x_telegram_init_data or "")
     except PermissionError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+def _pin_gate():
+    locked_until = database.get_state("pin_locked_until", "0")
+    try:
+        wait = int(locked_until) - int(time.time())
+    except ValueError:
+        wait = 0
+    if wait > 0:
+        raise HTTPException(status_code=429, detail=f"Слишком много попыток. Подождите {wait} с.")
+
+
+def _pin_fail():
+    fails = int(database.get_state("pin_fails", "0") or "0") + 1
+    database.set_state("pin_fails", fails)
+    seconds = pin.lockout_seconds(fails)
+    if seconds:
+        database.set_state("pin_locked_until", int(time.time()) + seconds)
+    return fails
+
+
+def _pin_reset():
+    database.set_state("pin_fails", "0")
+    database.set_state("pin_locked_until", "0")
 
 
 @asynccontextmanager
@@ -46,7 +85,11 @@ async def lifespan(_app):
         try:
             bot = telegram.bot_request("getMe")
             database.set_state("bot_username", bot.get("username", ""))
-            worker.configure_menu_button(app_url)
+            try:
+                admin_chat = int(admin_id)
+            except ValueError:
+                admin_chat = None
+            worker.configure_menu_button(app_url, admin_chat)
             database.set_state("menu_error", "")
         except RuntimeError as exc:
             database.set_state("menu_error", str(exc))
@@ -95,12 +138,12 @@ def put_config(payload: ConfigPayload, _user=Depends(require_admin)):
         raise HTTPException(status_code=422, detail="Укажите слова или хэштеги для фильтра.")
 
     config = {
+        **database.get_config(),
         "sources": normalized_sources,
         "destination": payload.destination.strip(),
         "filter_enabled": payload.filter_enabled,
         "filter_terms": payload.filter_terms.strip(),
         "filter_mode": payload.filter_mode,
-        "enabled": database.get_config().get("enabled", False),
     }
     database.set_config(config)
     return {"saved": True, "config": config}
@@ -144,7 +187,80 @@ def set_service(payload: ServicePayload, _user=Depends(require_admin)):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     config["enabled"] = payload.enabled
     database.set_config(config)
+    database.set_state("last_error", "")
+    if payload.enabled:
+        # Сразу проверяем источники, не дожидаясь следующего тика воркера.
+        threading.Thread(target=worker.poll_once, daemon=True).start()
     return {"running": payload.enabled}
+
+
+@app.put("/api/signature")
+def put_signature(payload: SignaturePayload, _user=Depends(require_admin)):
+    text = payload.text.strip()
+    if payload.enabled and not text:
+        raise HTTPException(status_code=422, detail="Введите текст подписи или отключите её.")
+    config = database.get_config()
+    config["signature_enabled"] = payload.enabled
+    config["signature_text"] = text
+    database.set_config(config)
+    return {"saved": True, "signature_enabled": payload.enabled, "signature_text": text}
+
+
+@app.get("/api/pin/status")
+def pin_status(_user=Depends(require_admin)):
+    return {"enabled": bool(database.get_state("pin_hash", ""))}
+
+
+@app.post("/api/pin/setup")
+def pin_setup(payload: PinPayload, _user=Depends(require_admin)):
+    if database.get_state("pin_hash", ""):
+        raise HTTPException(status_code=409, detail="PIN-код уже установлен. Смените его в настройках.")
+    database.set_state("pin_hash", pin.hash_pin(payload.pin))
+    _pin_reset()
+    return {"enabled": True}
+
+
+@app.post("/api/pin/verify")
+def pin_verify(payload: PinPayload, _user=Depends(require_admin)):
+    _pin_gate()
+    stored = database.get_state("pin_hash", "")
+    if not stored:
+        return {"ok": True, "enabled": False}
+    if not pin.verify_pin(stored, payload.pin):
+        _pin_fail()
+        raise HTTPException(status_code=401, detail="Неверный PIN-код.")
+    _pin_reset()
+    return {"ok": True, "enabled": True}
+
+
+@app.post("/api/pin/change")
+def pin_change(payload: PinChangePayload, _user=Depends(require_admin)):
+    _pin_gate()
+    stored = database.get_state("pin_hash", "")
+    if not stored:
+        raise HTTPException(status_code=400, detail="PIN-код ещё не установлен.")
+    if not pin.verify_pin(stored, payload.current_pin):
+        _pin_fail()
+        raise HTTPException(status_code=401, detail="Неверный текущий PIN-код.")
+    if payload.pin == payload.current_pin:
+        raise HTTPException(status_code=400, detail="Новый PIN-код должен отличаться от текущего.")
+    database.set_state("pin_hash", pin.hash_pin(payload.pin))
+    _pin_reset()
+    return {"enabled": True}
+
+
+@app.post("/api/pin/disable")
+def pin_disable(payload: PinPayload, _user=Depends(require_admin)):
+    _pin_gate()
+    stored = database.get_state("pin_hash", "")
+    if not stored:
+        return {"enabled": False}
+    if not pin.verify_pin(stored, payload.pin):
+        _pin_fail()
+        raise HTTPException(status_code=401, detail="Неверный PIN-код.")
+    database.set_state("pin_hash", "")
+    _pin_reset()
+    return {"enabled": False}
 
 
 @app.get("/api/history")

@@ -3,8 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#101a2b">
-  <title>Пересылка Telegram</title>
+  <meta name="theme-color" content="#0F0C0D">
+  <title>KEN-T · Пересылка Telegram</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600&family=Playfair+Display:wght@500;600&display=swap">
   <link rel="stylesheet" href="/static/app.css">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script defer src="/static/app.js"></script>
@@ -12,91 +15,177 @@
 <body>
   <div id="boot" class="boot">
     <div class="spinner" aria-hidden="true"></div>
-    <p>Загрузка настроек…</p>
+    <p id="boot-text">Загрузка…</p>
   </div>
 
-  <main class="shell">
-    <header class="hero">
-      <div class="brand-icon">✈️</div>
-      <div class="hero-text">
-        <p class="eyebrow">TELEGRAM MINI APP</p>
-        <h1>Пересылка</h1>
-        <p class="subhead">Публичные каналы → ваш канал</p>
-        <p id="bot-line" class="botline"></p>
+  <section id="pin-screen" class="pin-screen" hidden>
+    <div class="pin-scrim" aria-hidden="true"></div>
+    <div class="pin-content">
+      <p class="pin-wordmark">KEN-T</p>
+      <p id="pin-subtitle" class="pin-subtitle">Введите PIN-код</p>
+      <div id="pin-dots" class="pin-dots" aria-hidden="true"></div>
+      <p id="pin-error" class="pin-error" role="alert" hidden></p>
+      <div id="pin-pad" class="pin-pad">
+        <button class="pin-key" type="button" data-key="1">1</button>
+        <button class="pin-key" type="button" data-key="2">2</button>
+        <button class="pin-key" type="button" data-key="3">3</button>
+        <button class="pin-key" type="button" data-key="4">4</button>
+        <button class="pin-key" type="button" data-key="5">5</button>
+        <button class="pin-key" type="button" data-key="6">6</button>
+        <button class="pin-key" type="button" data-key="7">7</button>
+        <button class="pin-key" type="button" data-key="8">8</button>
+        <button class="pin-key" type="button" data-key="9">9</button>
+        <button class="pin-key pin-key-blank" type="button" tabindex="-1" aria-hidden="true"></button>
+        <button class="pin-key" type="button" data-key="0">0</button>
+        <button class="pin-key pin-key-action" type="button" data-key="back" aria-label="Удалить">⌫</button>
+      </div>
+      <button id="pin-cancel" class="pin-cancel" type="button" hidden>Отмена</button>
+    </div>
+  </section>
+
+  <div id="app" class="app" hidden>
+    <header class="topbar glass">
+      <div class="topbar-text">
+        <p class="topbar-eyebrow">PRIME TG · CONTROL</p>
+        <h1 class="topbar-title">KEN-T</h1>
       </div>
       <div id="service-badge" class="badge"><span class="dot" aria-hidden="true"></span>Проверка…</div>
     </header>
 
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
 
-    <section class="card">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">ИСТОЧНИКИ</p>
-          <h2>Каналы</h2>
+    <main class="screens">
+      <section class="screen" data-screen="home">
+        <div class="hero glass">
+          <p class="eyebrow">ПЕРЕСЫЛКА</p>
+          <div class="hero-row">
+            <button id="toggle-service" class="hero-toggle" type="button" aria-label="Запустить или остановить пересылку">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path class="hero-toggle-icon" d="M8 5v14l11-7z"/></svg>
+            </button>
+            <div class="hero-info">
+              <p id="hero-status" class="hero-status">Остановлено</p>
+              <p id="bot-line" class="hero-bot"></p>
+            </div>
+          </div>
+          <p id="status-detail" class="hero-detail"></p>
         </div>
-        <span id="source-counter" class="counter">0 / 5</span>
-      </div>
-      <p class="hint">Добавьте публичные каналы. Новые посты будут отправляться в одно место.</p>
-      <div id="sources" class="sources"></div>
-      <button id="add-source" class="button secondary" type="button">＋ Добавить канал</button>
-    </section>
 
-    <section class="card">
-      <p class="eyebrow">ПОЛУЧАТЕЛЬ</p>
-      <h2>Канал назначения</h2>
-      <label class="field-label" for="destination">Username канала или ссылка t.me</label>
-      <input id="destination" class="text-input" type="text" placeholder="@мой_канал" autocomplete="off" spellcheck="false">
-      <p class="hint">Добавьте бота в канал администратором с правом публикации.</p>
-    </section>
+        <div id="stats" class="stats"></div>
 
-    <section class="card">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">НАСТРОЙКИ</p>
-          <h2>Фильтр постов</h2>
+        <div class="section-head">
+          <h2 class="section-title">История</h2>
+          <button id="refresh" class="icon-button" type="button" aria-label="Обновить">↻</button>
         </div>
-        <label class="toggle" aria-label="Включить фильтр">
-          <input id="filter-enabled" type="checkbox">
-          <span></span>
-        </label>
-      </div>
-      <div id="filter-options" hidden>
-        <label class="field-label" for="filter-terms">Слова или хэштеги</label>
-        <textarea id="filter-terms" class="text-input" rows="3" placeholder="скидка&#10;#новости"></textarea>
-        <label class="field-label" for="filter-mode">Условие совпадения</label>
-        <select id="filter-mode" class="text-input">
-          <option value="any">Любое совпадение</option>
-          <option value="all">Все совпадения</option>
-        </select>
-      </div>
-      <p class="hint">Без фильтра копируются все посты, включая ссылки и полный текст.</p>
-    </section>
+        <div id="history" class="history-list"></div>
+      </section>
 
-    <div class="actions">
-      <button id="save" class="button primary" type="button">Сохранить настройки</button>
-      <button id="test" class="button secondary" type="button">Проверить подключение</button>
-      <button id="toggle-service" class="button primary" type="button">▶️ Запустить пересылку</button>
-    </div>
-
-    <section class="card history-card">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">МОНИТОРИНГ</p>
-          <h2>Последние события</h2>
+      <section class="screen" data-screen="settings" hidden>
+        <div class="card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">ИСТОЧНИКИ</p>
+              <h2 class="section-title">Каналы</h2>
+            </div>
+            <span id="source-counter" class="counter">0 / 5</span>
+          </div>
+          <p class="hint">Публичные каналы, чьи новые посты нужно пересылать.</p>
+          <div id="sources" class="sources"></div>
+          <button id="add-source" class="button secondary" type="button">＋ Добавить канал</button>
         </div>
-        <button id="refresh" class="icon-button" type="button" aria-label="Обновить" title="Обновить">↻</button>
-      </div>
-      <div id="stats" class="stats" hidden></div>
-      <div id="status-detail" class="hint"></div>
-      <div id="history" class="history-list"></div>
-    </section>
 
-    <footer>Обновление статуса — автоматически, раз в минуту. Render Free может усыплять сервис при неактивности; непрерывная пересылка не гарантируется. Настройки и история на бесплатном диске могут сброситься при перезапуске или деплое.</footer>
-  </main>
+        <div class="card">
+          <p class="eyebrow">ПОЛУЧАТЕЛЬ</p>
+          <h2 class="section-title">Канал назначения</h2>
+          <label class="field-label" for="destination">Username или ссылка t.me</label>
+          <input id="destination" class="text-input" type="text" placeholder="@мой_канал" autocomplete="off" spellcheck="false">
+          <p class="hint">Добавьте бота в канал администратором с правом публикации.</p>
+        </div>
+
+        <div class="card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">ОТБОР</p>
+              <h2 class="section-title">Фильтр постов</h2>
+            </div>
+            <label class="toggle" aria-label="Включить фильтр">
+              <input id="filter-enabled" type="checkbox">
+              <span></span>
+            </label>
+          </div>
+          <div id="filter-options" hidden>
+            <label class="field-label" for="filter-terms">Слова или хэштеги</label>
+            <textarea id="filter-terms" class="text-input" rows="3" placeholder="скидка&#10;#новости"></textarea>
+            <label class="field-label" for="filter-mode">Условие совпадения</label>
+            <select id="filter-mode" class="text-input">
+              <option value="any">Любое совпадение</option>
+              <option value="all">Все совпадения</option>
+            </select>
+          </div>
+          <p class="hint">Без фильтра пересылаются все новые посты источников.</p>
+        </div>
+
+        <div class="card">
+          <p class="eyebrow">БЕЗОПАСНОСТЬ</p>
+          <h2 class="section-title">PIN-код панели</h2>
+          <p class="hint" id="pin-security-hint">Код запрашивается при каждом открытии приложения.</p>
+          <div class="button-row">
+            <button id="pin-setup" class="button primary" type="button">Установить код</button>
+            <button id="pin-change" class="button secondary" type="button" hidden>Сменить код</button>
+            <button id="pin-disable" class="button danger" type="button" hidden>Отключить</button>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="save" class="button primary" type="button">Сохранить настройки</button>
+          <button id="test" class="button secondary" type="button">Проверить подключение</button>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="signature" hidden>
+        <div class="card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">ПОДПИСЬ</p>
+              <h2 class="section-title">Подпись к постам</h2>
+            </div>
+            <label class="toggle" aria-label="Включить подпись">
+              <input id="signature-enabled" type="checkbox">
+              <span></span>
+            </label>
+          </div>
+          <p class="hint">Текст добавляется в конец каждого пересылаемого сообщения.</p>
+          <textarea id="signature-text" class="text-input" rows="4" placeholder="Подписывайтесь: @мой_канал"></textarea>
+          <p class="field-label">Предпросмотр</p>
+          <div class="preview">
+            <p id="signature-preview-empty" class="preview-empty">Здесь появится текст поста с вашей подписью.</p>
+            <p id="signature-preview-text" class="preview-text" hidden></p>
+            <p id="signature-preview-sign" class="preview-sign" hidden></p>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="signature-save" class="button primary" type="button">Сохранить подпись</button>
+        </div>
+      </section>
+    </main>
+
+    <nav class="tabbar glass" aria-label="Разделы">
+      <button class="tab is-active" type="button" data-tab="home">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
+        <span>Главная</span>
+      </button>
+      <button class="tab" type="button" data-tab="settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg>
+        <span>Настройки</span>
+      </button>
+      <button class="tab" type="button" data-tab="signature">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20c3-1 5-3 8-8s5-7 8-7"/><path d="M4 20h5"/></svg>
+        <span>Подпись</span>
+      </button>
+    </nav>
+  </div>
 
   <div id="confirm" class="modal" hidden>
-    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <div class="modal-card glass" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
       <h3 id="confirm-title"></h3>
       <p id="confirm-message"></p>
       <div class="modal-actions">

@@ -2,7 +2,14 @@
 
 Private Telegram Mini App for forwarding new posts from up to five public Telegram channels into one destination channel. It preserves post text and links, splits long text to Telegram's message limits, and uploads supported photos and videos. Forwarding is off until the owner starts it in the Mini App. The bot token is read only from the server environment and is never returned to the Mini App.
 
-The Mini App itself adapts to the Telegram theme, validates the form before saving, asks for confirmation before the forwarding runs, and shows live status with per-status statistics (forwarded / filtered / skipped / errors), auto-refreshing every minute.
+The Mini App uses a fixed dark "Luxe" glass theme (Playfair Display + Manrope, burgundy accents) with a bottom tab bar. It validates the form before saving, asks for confirmation before the forwarding runs, and shows live status with per-status statistics (forwarded / filtered / skipped / errors), auto-refreshing every 15 seconds.
+
+## Features
+
+- **Signature (подпись):** an optional text appended to the end of every forwarded post and media caption, edited on its own tab with a live preview.
+- **PIN code:** an optional 4-digit lock on top of the Telegram owner check. It is stored as a PBKDF2 hash, asks for the code on every launch, and locks out after repeated wrong attempts. Set up, change, or disable it in Settings.
+- **Instant start:** enabling forwarding saves the settings, validates the sources and bot rights, and runs the first check immediately instead of waiting for the next poll.
+- **Video/photo albums, long-text splitting, de-duplication, and retry** behave as described under Reliability.
 
 ## Reliability
 

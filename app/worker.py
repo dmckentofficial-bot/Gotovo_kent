@@ -1,3 +1,4 @@
+import json
 import re
 import threading
 import time
@@ -38,6 +39,8 @@ def poll_once():
         database.set_state("last_checked", int(time.time()))
         return
 
+    signature = config.get("signature_text", "").strip() if config.get("signature_enabled") else ""
+
     for source in config["sources"]:
         try:
             posts = telegram.fetch_public_posts(source)
@@ -61,7 +64,7 @@ def poll_once():
                     database.set_cursor(source, post_id)
                     continue
                 try:
-                    if telegram.publish_post(post, config["destination"]):
+                    if telegram.publish_post(post, config["destination"], signature):
                         database.write_history(post, source, "forwarded")
                     else:
                         database.write_history(post, source, "skipped", "Пустой пост без поддерживаемого медиа.")
@@ -117,16 +120,17 @@ def validate_configuration():
     }
 
 
-def configure_menu_button(app_url):
+def configure_menu_button(app_url, admin_id=None):
     if not app_url:
         return
-    telegram.bot_request(
-        "setChatMenuButton",
-        {
-            "menu_button": {
-                "type": "web_app",
-                "text": "Открыть приложение",
-                "web_app": {"url": app_url.rstrip("/") + "/"},
-            },
-        },
-    )
+    menu_button = {
+        "type": "web_app",
+        "text": "Открыть приложение",
+        "web_app": {"url": app_url.rstrip("/") + "/"},
+    }
+    targets = [admin_id] if admin_id else [None]
+    for chat_id in targets:
+        data = {"menu_button": json.dumps(menu_button)}
+        if chat_id is not None:
+            data["chat_id"] = chat_id
+        telegram.bot_request("setChatMenuButton", data)

@@ -1,12 +1,24 @@
 (() => {
-  const isDemo = new URLSearchParams(window.location.search).has("demo");
+  const params = new URLSearchParams(window.location.search);
+  const isDemo = params.has("demo");
   const webApp = isDemo ? createDemoWebApp() : (window.Telegram?.WebApp || null);
-  const themeParams = webApp?.themeParams || {};
   const initData = webApp?.initData || "";
 
   const $ = (selector) => document.querySelector(selector);
   const nodes = {
     boot: $("#boot"),
+    bootText: $("#boot-text"),
+    app: $("#app"),
+    // dashboard
+    badge: $("#service-badge"),
+    toggle: $("#toggle-service"),
+    heroStatus: $("#hero-status"),
+    botLine: $("#bot-line"),
+    statusDetail: $("#status-detail"),
+    stats: $("#stats"),
+    history: $("#history"),
+    refresh: $("#refresh"),
+    // settings
     sources: $("#sources"),
     sourceCounter: $("#source-counter"),
     addSource: $("#add-source"),
@@ -15,37 +27,59 @@
     filterTerms: $("#filter-terms"),
     filterMode: $("#filter-mode"),
     filterOptions: $("#filter-options"),
-    notice: $("#notice"),
-    history: $("#history"),
-    stats: $("#stats"),
-    statusDetail: $("#status-detail"),
-    badge: $("#service-badge"),
-    toggle: $("#toggle-service"),
-    botLine: $("#bot-line"),
+    pinSetup: $("#pin-setup"),
+    pinChange: $("#pin-change"),
+    pinDisable: $("#pin-disable"),
+    pinHint: $("#pin-security-hint"),
     save: $("#save"),
     test: $("#test"),
-    refresh: $("#refresh"),
+    // signature
+    signatureEnabled: $("#signature-enabled"),
+    signatureText: $("#signature-text"),
+    signatureSave: $("#signature-save"),
+    previewEmpty: $("#signature-preview-empty"),
+    previewText: $("#signature-preview-text"),
+    previewSign: $("#signature-preview-sign"),
+    // shared
+    notice: $("#notice"),
     confirm: $("#confirm"),
     confirmTitle: $("#confirm-title"),
     confirmMessage: $("#confirm-message"),
     confirmOk: $("#confirm-ok"),
     confirmCancel: $("#confirm-cancel"),
+    // pin gate
+    pinScreen: $("#pin-screen"),
+    pinSubtitle: $("#pin-subtitle"),
+    pinDots: $("#pin-dots"),
+    pinError: $("#pin-error"),
+    pinPad: $("#pin-pad"),
+    pinCancel: $("#pin-cancel"),
   };
 
-  let config = { sources: [], destination: "", filter_enabled: false, filter_terms: "", filter_mode: "any", enabled: false };
-  const AUTO_REFRESH_MS = 60000;
+  let config = { sources: [], destination: "", filter_enabled: false, filter_terms: "", filter_mode: "any", signature_enabled: false, signature_text: "" };
+  let pinConfigured = false;
+  let pinUnlocked = false;
+
+  const AUTO_REFRESH_MS = 15000;
+  const MAX_SOURCES = 5;
+  const PIN_DIGITS = 4;
   const STATUS_LABELS = { forwarded: "Переслано", filtered: "Фильтр", skipped: "Пропущено", error: "Ошибка" };
-  const STATUS_ICONS = { forwarded: "✅", filtered: "🚫", skipped: "⏭️", error: "⚠️" };
+  const STATUS_ICONS = { forwarded: "✓", filtered: "⌁", skipped: "↷", error: "!" };
+  const PLAY_PATH = "M8 5v14l11-7z";
+  const PAUSE_PATH = "M7 5h3.4v14H7zM13.6 5H17v14h-3.4z";
 
   const DEMOSTATE = {
     running: true,
     lastChecked: Math.floor(Date.now() / 1000) - 42,
+    pinEnabled: false,
     config: {
       sources: ["channel_tech", "channel_news", "channel_sport", "channel_finance", "channel_design"],
       destination: "@my_destination",
       filter_enabled: true,
       filter_terms: "скидка\n#новости",
       filter_mode: "any",
+      signature_enabled: true,
+      signature_text: "Подписывайтесь: @prime_tg_channel",
       enabled: true,
     },
   };
@@ -88,15 +122,18 @@
   }
 
   async function demoApi(path, options = {}) {
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await new Promise((resolve) => setTimeout(resolve, 220));
     const method = (options.method || "GET").toUpperCase();
     const key = String(path).replace(/^\/+/, "");
+    const payload = options.body ? JSON.parse(options.body) : {};
     if (key === "api/config") {
-      if (method === "PUT") {
-        const payload = JSON.parse(options.body || "{}");
-        DEMOSTATE.config = { ...DEMOSTATE.config, ...payload };
-      }
+      if (method === "PUT") DEMOSTATE.config = { ...DEMOSTATE.config, ...payload };
       return { ...DEMOSTATE.config, sources: [...DEMOSTATE.config.sources] };
+    }
+    if (key === "api/signature" && method === "PUT") {
+      DEMOSTATE.config.signature_enabled = Boolean(payload.enabled);
+      DEMOSTATE.config.signature_text = String(payload.text || "").trim();
+      return { saved: true, signature_enabled: DEMOSTATE.config.signature_enabled, signature_text: DEMOSTATE.config.signature_text };
     }
     if (key === "api/status") {
       return {
@@ -119,69 +156,39 @@
       };
     }
     if (key === "api/service" && method === "PUT") {
-      const payload = JSON.parse(options.body || "{}");
       DEMOSTATE.running = Boolean(payload.enabled);
       return { running: DEMOSTATE.running };
     }
+    if (key === "api/pin/status") return { enabled: DEMOSTATE.pinEnabled };
+    if (key.startsWith("api/pin/")) return { ok: true, enabled: DEMOSTATE.pinEnabled };
     return {};
   }
 
   function createDemoWebApp() {
-    const light = new URLSearchParams(window.location.search).has("light");
+    const light = params.has("light");
     const palette = light ? {
-      bg_color: "#f6f8fa",
-      secondary_bg_color: "#ffffff",
-      text_color: "#101828",
-      hint_color: "#5b6572",
-      link_color: "#2481cc",
-      button_color: "#2481cc",
-      button_text_color: "#ffffff",
+      bg_color: "#f6f8fa", secondary_bg_color: "#ffffff", text_color: "#101828",
+      hint_color: "#5b6572", link_color: "#8F1E3A", button_color: "#8F1E3A", button_text_color: "#ffffff",
     } : {
-      bg_color: "#0b1220",
-      secondary_bg_color: "#121d2e",
-      text_color: "#f3f7ff",
-      hint_color: "#9db0c8",
-      link_color: "#43c4e5",
-      button_color: "#2a9ecb",
-      button_text_color: "#06202c",
+      bg_color: "#0F0C0D", secondary_bg_color: "#1A1315", text_color: "#F7F3F4",
+      hint_color: "#8A797D", link_color: "#8F1E3A", button_color: "#8F1E3A", button_text_color: "#ffffff",
     };
     const noop = () => {};
     return {
       initData: 'query_id=demo&user={"id":123456,"first_name":"Демо"}&auth_date=0',
       colorScheme: light ? "light" : "dark",
       themeParams: palette,
-      ready: noop,
-      expand: noop,
-      disableVerticalSwipes: noop,
-      setHeaderColor: noop,
-      setBackgroundColor: noop,
+      ready: noop, expand: noop, disableVerticalSwipes: noop,
+      setHeaderColor: noop, setBackgroundColor: noop,
       HapticFeedback: { impactOccurred: noop, notificationOccurred: noop },
     };
   }
 
   webApp?.ready();
   webApp?.expand();
-  applyTelegramTheme();
   if (typeof webApp?.disableVerticalSwipes === "function") webApp.disableVerticalSwipes();
-
-  function applyTelegramTheme() {
-    const scheme = webApp?.colorScheme === "light" ? "light" : "dark";
-    const root = document.documentElement;
-    root.dataset.theme = scheme;
-    const fallback = (light, dark) => (scheme === "light" ? light : dark);
-    const set = (prop, value, fb) => root.style.setProperty(prop, value || fb);
-    set("--bg", themeParams.bg_color, fallback("#f6f8fa", "#0b1220"));
-    set("--surface", themeParams.secondary_bg_color, fallback("#ffffff", "#121d2e"));
-    set("--text", themeParams.text_color, fallback("#101828", "#f3f7ff"));
-    set("--muted", themeParams.hint_color, fallback("#5b6572", "#9db0c8"));
-    set("--accent", themeParams.link_color, "#43c4e5");
-    set("--button", themeParams.button_color, "#43c4e5");
-    set("--button-text", themeParams.button_text_color, scheme === "light" ? "#ffffff" : "#07131b");
-    const bgColor = themeParams.bg_color || fallback("#f6f8fa", "#0b1220");
-    const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute("content", root.style.getPropertyValue("--bg") || bgColor);
-    try { webApp?.setHeaderColor?.(bgColor); } catch (_) {}
-    try { webApp?.setBackgroundColor?.(bgColor); } catch (_) {}
+  if (typeof webApp?.setHeaderColor === "function") {
+    try { webApp.setHeaderColor("#0F0C0D"); } catch (_) {}
   }
 
   function haptic(type = "light") {
@@ -227,8 +234,8 @@
     if (busy) {
       button.dataset.label = button.textContent;
       button.textContent = "Подождите…";
-    } else {
-      if (button.dataset.label) button.textContent = button.dataset.label;
+    } else if (button.dataset.label) {
+      button.textContent = button.dataset.label;
       delete button.dataset.label;
     }
   }
@@ -247,6 +254,25 @@
     first.scrollIntoView?.({ behavior: "smooth", block: "center" });
   }
 
+  /* ---------- tabs ---------- */
+  function activateTab(name) {
+    document.querySelectorAll(".screen").forEach((screen) => {
+      screen.hidden = screen.dataset.screen !== name;
+    });
+    document.querySelectorAll(".tab").forEach((tab) => {
+      tab.classList.toggle("is-active", tab.dataset.tab === name);
+    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  document.querySelectorAll(".tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      haptic("light");
+      activateTab(tab.dataset.tab);
+    });
+  });
+
+  /* ---------- validation ---------- */
   const USERNAME_RE = /^[A-Za-z0-9_]{5,32}$/;
   const TME_LINK_RE = /^https?:\/\/(www\.)?t\.me\/(s\/)?([A-Za-z0-9_]{5,32})\/?$/;
 
@@ -274,9 +300,7 @@
     }
 
     const sourceValues = sourceInputs.map((input) => input.value.trim()).filter(Boolean);
-    if (!sourceValues.length) {
-      errors.push("Добавьте хотя бы один канал-источник.");
-    }
+    if (!sourceValues.length) errors.push("Добавьте хотя бы один канал-источник.");
     const seenValid = new Set();
     sourceValues.forEach((value, index) => {
       const username = usernameFrom(value);
@@ -300,6 +324,7 @@
     return errors;
   }
 
+  /* ---------- settings ---------- */
   function renderSources() {
     nodes.sources.replaceChildren();
     config.sources.forEach((source, index) => {
@@ -315,10 +340,7 @@
       input.value = source;
       input.addEventListener("input", () => { config.sources[index] = input.value; });
       input.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" && !event.isComposing) {
-          event.preventDefault();
-          nodes.save.click();
-        }
+        if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); nodes.save.click(); }
       });
       row.append(input);
       if (config.sources.length > 1) {
@@ -327,16 +349,13 @@
         remove.type = "button";
         remove.textContent = "−";
         remove.setAttribute("aria-label", `Удалить источник ${index + 1}`);
-        remove.addEventListener("click", () => {
-          config.sources.splice(index, 1);
-          renderSources();
-        });
+        remove.addEventListener("click", () => { config.sources.splice(index, 1); renderSources(); });
         row.append(remove);
       }
       nodes.sources.append(row);
     });
-    nodes.sourceCounter.textContent = `${config.sources.length} / 5`;
-    nodes.addSource.disabled = config.sources.length >= 5;
+    nodes.sourceCounter.textContent = `${config.sources.length} / ${MAX_SOURCES}`;
+    nodes.addSource.disabled = config.sources.length >= MAX_SOURCES;
   }
 
   function readForm() {
@@ -347,11 +366,16 @@
     config.filter_enabled = nodes.filterEnabled.checked;
     config.filter_terms = nodes.filterTerms.value;
     config.filter_mode = nodes.filterMode.value;
-    return config;
+    return {
+      sources: config.sources,
+      destination: config.destination,
+      filter_enabled: config.filter_enabled,
+      filter_terms: config.filter_terms,
+      filter_mode: config.filter_mode,
+    };
   }
 
-  async function loadConfig() {
-    config = await api("/api/config");
+  function fillSettingsForm() {
     renderSources();
     nodes.destination.value = config.destination || "";
     nodes.filterEnabled.checked = Boolean(config.filter_enabled);
@@ -360,9 +384,38 @@
     nodes.filterOptions.hidden = !nodes.filterEnabled.checked;
   }
 
+  async function loadConfig() {
+    config = { ...config, ...(await api("/api/config")) };
+    fillSettingsForm();
+    fillSignatureForm();
+  }
+
+  /* ---------- signature ---------- */
+  function fillSignatureForm() {
+    nodes.signatureEnabled.checked = Boolean(config.signature_enabled);
+    nodes.signatureText.value = config.signature_text || "";
+    renderSignaturePreview();
+  }
+
+  function renderSignaturePreview() {
+    const enabled = nodes.signatureEnabled.checked;
+    const signature = nodes.signatureText.value.trim();
+    const show = enabled && signature;
+    nodes.previewEmpty.hidden = Boolean(show);
+    nodes.previewText.hidden = !show;
+    nodes.previewSign.hidden = !show;
+    if (show) {
+      nodes.previewText.textContent = "Новый пост из канала-источника — так будет выглядеть пересланное сообщение.";
+      nodes.previewSign.textContent = signature;
+    }
+  }
+
+  nodes.signatureEnabled.addEventListener("change", () => { haptic("light"); renderSignaturePreview(); });
+  nodes.signatureText.addEventListener("input", renderSignaturePreview);
+
+  /* ---------- status / history ---------- */
   function renderStats(stats) {
     nodes.stats.replaceChildren();
-    nodes.stats.hidden = stats.total === 0;
     const chips = [
       ["forwarded", "Переслано", stats.forwarded],
       ["filtered", "Фильтр", stats.filtered],
@@ -372,11 +425,11 @@
     for (const [key, label, count] of chips) {
       const chip = document.createElement("span");
       chip.className = `chip chip-${key}`;
-      const name = document.createElement("span");
-      name.textContent = label;
       const value = document.createElement("b");
       value.textContent = count;
-      chip.append(name, value);
+      const name = document.createElement("span");
+      name.textContent = label;
+      chip.append(value, name);
       nodes.stats.append(chip);
     }
   }
@@ -445,11 +498,14 @@
       api("/api/stats"),
     ]);
     const running = Boolean(status.running);
-    nodes.badge.innerHTML = `<span class="dot" aria-hidden="true"></span>${running ? "Мониторинг включён" : "Остановлено"}`;
+    nodes.badge.innerHTML = `<span class="dot" aria-hidden="true"></span>${running ? "Пересылка активна" : "Остановлено"}`;
     nodes.badge.classList.toggle("running", running);
     nodes.badge.classList.toggle("stopped", !running);
-    nodes.toggle.textContent = running ? "⏹ Остановить пересылку" : "▶️ Запустить пересылку";
-    nodes.toggle.className = `button ${running ? "secondary" : "primary"}`;
+    nodes.heroStatus.textContent = running ? "Пересылка активна" : "Пересылка остановлена";
+    nodes.toggle.classList.toggle("is-running", running);
+    const icon = nodes.toggle.querySelector(".hero-toggle-icon");
+    if (icon) icon.setAttribute("d", running ? PAUSE_PATH : PLAY_PATH);
+    nodes.toggle.setAttribute("aria-label", running ? "Остановить пересылку" : "Запустить пересылку");
     nodes.botLine.textContent = status.bot ? `Бот: @${status.bot}` : "";
 
     const details = [];
@@ -458,13 +514,14 @@
     }
     if (status.last_error) details.push(`Ошибка: ${status.last_error}`);
     if (status.menu_error) details.push(`Кнопка бота: ${status.menu_error}`);
-    if (!details.length) details.push("Проверка источников выполняется автоматически каждую минуту.");
+    if (!details.length) details.push("Проверка источников выполняется автоматически каждые 15 секунд.");
     nodes.statusDetail.textContent = details.join("\n");
 
     renderStats(stats);
     renderHistory(history);
   }
 
+  /* ---------- confirm modal ---------- */
   function askConfirm({ title, message, okLabel, danger }) {
     nodes.confirmTitle.textContent = title;
     nodes.confirmMessage.textContent = message;
@@ -472,30 +529,183 @@
     nodes.confirmOk.className = `button ${danger ? "danger" : "primary"}`;
     nodes.confirm.hidden = false;
     nodes.confirmCancel.focus();
-    return new Promise((resolve) => {
-      nodes.confirm._resolve = resolve;
-    });
+    return new Promise((resolve) => { nodes.confirm._resolve = resolve; });
   }
 
-  nodes.confirmCancel.addEventListener("click", () => {
-    nodes.confirm.hidden = true;
-    nodes.confirm._resolve?.(false);
-  });
-
-  nodes.confirmOk.addEventListener("click", () => {
-    nodes.confirm.hidden = true;
-    nodes.confirm._resolve?.(true);
-  });
-
+  nodes.confirmCancel.addEventListener("click", () => { nodes.confirm.hidden = true; nodes.confirm._resolve?.(false); });
+  nodes.confirmOk.addEventListener("click", () => { nodes.confirm.hidden = true; nodes.confirm._resolve?.(true); });
   nodes.confirm.addEventListener("click", (event) => {
-    if (event.target === nodes.confirm) {
-      nodes.confirm.hidden = true;
-      nodes.confirm._resolve?.(false);
-    }
+    if (event.target === nodes.confirm) { nodes.confirm.hidden = true; nodes.confirm._resolve?.(false); }
   });
 
+  /* ---------- PIN gate ---------- */
+  const pinGate = (() => {
+    let mode = "unlock";
+    let buffer = "";
+    let stage = 0;
+    let firstPin = null;
+    let currentPin = null;
+    let resolver = null;
+
+    const subtitles = {
+      unlock: "Введите PIN-код",
+      setup0: "Придумайте PIN-код",
+      setup1: "Повторите код",
+      change0: "Текущий PIN-код",
+      change1: "Новый PIN-код",
+      change2: "Повторите новый код",
+      disable: "Введите текущий PIN-код",
+    };
+
+    function renderDots() {
+      nodes.pinDots.replaceChildren();
+      for (let i = 0; i < PIN_DIGITS; i += 1) {
+        const dot = document.createElement("span");
+        if (i < buffer.length) dot.className = "filled";
+        nodes.pinDots.append(dot);
+      }
+    }
+
+    function setSubtitle(text) { nodes.pinSubtitle.textContent = text; }
+
+    function setError(text) {
+      nodes.pinError.textContent = text || "";
+      nodes.pinError.hidden = !text;
+      if (text) {
+        nodes.pinDots.classList.remove("shake");
+        void nodes.pinDots.offsetWidth;
+        nodes.pinDots.classList.add("shake");
+      }
+    }
+
+    function resetInput() { buffer = ""; renderDots(); }
+
+    function close(result) {
+      nodes.pinScreen.hidden = true;
+      nodes.pinError.hidden = true;
+      const done = resolver;
+      resolver = null;
+      done?.(result);
+    }
+
+    function open(nextMode, configured) {
+      mode = nextMode;
+      stage = 0;
+      firstPin = null;
+      currentPin = null;
+      setError("");
+      resetInput();
+      pinConfigured = configured;
+      const label = mode === "unlock" ? subtitles.unlock : subtitles[`${mode}${stage}`] || subtitles[mode];
+      setSubtitle(label);
+      nodes.pinCancel.hidden = mode === "unlock";
+      nodes.pinScreen.hidden = false;
+      return new Promise((resolve) => { resolver = resolve; });
+    }
+
+    async function complete() {
+      const value = buffer;
+      if (mode === "unlock") {
+        try {
+          await api("/api/pin/verify", { method: "POST", body: JSON.stringify({ pin: value }) });
+          hapticResult("success");
+          close(true);
+        } catch (error) {
+          setError(error.message); hapticResult("error"); resetInput();
+        }
+        return;
+      }
+      if (mode === "setup") {
+        if (stage === 0) { firstPin = value; stage = 1; setError(""); resetInput(); setSubtitle(subtitles.setup1); return; }
+        if (value !== firstPin) { setError("Коды не совпадают."); hapticResult("error"); stage = 0; firstPin = null; resetInput(); setSubtitle(subtitles.setup0); return; }
+        try {
+          await api("/api/pin/setup", { method: "POST", body: JSON.stringify({ pin: value }) });
+          hapticResult("success"); close(true);
+        } catch (error) { setError(error.message); hapticResult("error"); resetInput(); stage = 0; firstPin = null; setSubtitle(subtitles.setup0); }
+        return;
+      }
+      if (mode === "change") {
+        if (stage === 0) {
+          try {
+            await api("/api/pin/verify", { method: "POST", body: JSON.stringify({ pin: value }) });
+            currentPin = value; stage = 1; setError(""); resetInput(); setSubtitle(subtitles.change1);
+          } catch (error) { setError(error.message); hapticResult("error"); resetInput(); }
+          return;
+        }
+        if (stage === 1) { firstPin = value; stage = 2; setError(""); resetInput(); setSubtitle(subtitles.change2); return; }
+        if (value !== firstPin) { setError("Коды не совпадают."); hapticResult("error"); stage = 1; firstPin = null; resetInput(); setSubtitle(subtitles.change1); return; }
+        try {
+          await api("/api/pin/change", { method: "POST", body: JSON.stringify({ current_pin: currentPin, pin: value }) });
+          hapticResult("success"); close(true);
+        } catch (error) { setError(error.message); hapticResult("error"); resetInput(); stage = 1; firstPin = null; setSubtitle(subtitles.change1); }
+        return;
+      }
+      if (mode === "disable") {
+        try {
+          await api("/api/pin/disable", { method: "POST", body: JSON.stringify({ pin: value }) });
+          hapticResult("success"); close(true);
+        } catch (error) { setError(error.message); hapticResult("error"); resetInput(); }
+      }
+    }
+
+    function press(key) {
+      if (key === "back") { buffer = buffer.slice(0, -1); renderDots(); return; }
+      if (!/^\d$/.test(key) || buffer.length >= PIN_DIGITS) return;
+      haptic("light");
+      buffer += key;
+      renderDots();
+      if (buffer.length === PIN_DIGITS) setTimeout(complete, 130);
+    }
+
+    nodes.pinPad.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-key]");
+      if (button) press(button.dataset.key);
+    });
+    nodes.pinCancel.addEventListener("click", () => { haptic("light"); close(false); });
+
+    return { open, renderDots };
+  })();
+
+  /* ---------- PIN management in settings ---------- */
+  async function refreshPinSecurity() {
+    const status = await api("/api/pin/status");
+    pinConfigured = Boolean(status.enabled);
+    nodes.pinSetup.hidden = pinConfigured;
+    nodes.pinChange.hidden = !pinConfigured;
+    nodes.pinDisable.hidden = !pinConfigured;
+    nodes.pinHint.textContent = pinConfigured
+      ? "Код включён и запрашивается при каждом открытии приложения."
+      : "Код не установлен. Установите его, чтобы закрыть панель паролем.";
+  }
+
+  nodes.pinSetup.addEventListener("click", async () => {
+    haptic("light");
+    const ok = await pinGate.open("setup", false);
+    if (ok) { showNotice("PIN-код установлен.", "success"); await refreshPinSecurity(); }
+  });
+
+  nodes.pinChange.addEventListener("click", async () => {
+    haptic("light");
+    const ok = await pinGate.open("change", true);
+    if (ok) { showNotice("PIN-код изменён.", "success"); await refreshPinSecurity(); }
+  });
+
+  nodes.pinDisable.addEventListener("click", async () => {
+    haptic("light");
+    const confirmed = await askConfirm({
+      title: "Отключить PIN-код?",
+      message: "Панель будет открываться без запроса кода.",
+      okLabel: "Отключить",
+      danger: true,
+    });
+    if (!confirmed) return;
+    const ok = await pinGate.open("disable", true);
+    if (ok) { showNotice("PIN-код отключён.", "success"); await refreshPinSecurity(); }
+  });
+
+  /* ---------- settings events ---------- */
   nodes.addSource.addEventListener("click", () => {
-    if (config.sources.length < 5) {
+    if (config.sources.length < MAX_SOURCES) {
       config.sources.push("");
       renderSources();
       nodes.sources.lastElementChild?.querySelector("input")?.focus();
@@ -508,25 +718,18 @@
 
   document.querySelectorAll("input.text-input").forEach((input) => {
     input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.isComposing) {
-        event.preventDefault();
-        nodes.save.click();
-      }
+      if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); nodes.save.click(); }
     });
   });
 
   nodes.save.addEventListener("click", async (event) => {
     const errors = validateForm();
-    if (errors.length) {
-      showNotice(errors.join("\n"), "error");
-      focusFirstInvalid();
-      haptic("heavy");
-      return;
-    }
+    if (errors.length) { showNotice(errors.join("\n"), "error"); focusFirstInvalid(); haptic("heavy"); return; }
     const button = event.currentTarget;
     setBusy(button, true);
     try {
-      config = await api("/api/config", { method: "PUT", body: JSON.stringify(readForm()) }).then((result) => result.config);
+      const result = await api("/api/config", { method: "PUT", body: JSON.stringify(readForm()) });
+      config = { ...config, ...result.config };
       renderSources();
       showNotice("Настройки сохранены. Новые публикации будут проверяться автоматически.", "success");
       hapticResult("success");
@@ -541,12 +744,7 @@
 
   nodes.test.addEventListener("click", async (event) => {
     const errors = validateForm();
-    if (errors.length) {
-      showNotice(errors.join("\n"), "error");
-      focusFirstInvalid();
-      haptic("heavy");
-      return;
-    }
+    if (errors.length) { showNotice(errors.join("\n"), "error"); focusFirstInvalid(); haptic("heavy"); return; }
     const button = event.currentTarget;
     setBusy(button, true);
     try {
@@ -565,11 +763,13 @@
   });
 
   nodes.toggle.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
     const errors = validateForm();
     if (errors.length) {
       showNotice(errors.join("\n"), "error");
       focusFirstInvalid();
       haptic("heavy");
+      activateTab("settings");
       return;
     }
     const currentlyRunning = nodes.badge.classList.contains("running");
@@ -577,68 +777,92 @@
       title: currentlyRunning ? "Остановить пересылку?" : "Запустить пересылку?",
       message: currentlyRunning
         ? "Фоновый мониторинг источников будет приостановлен. Настройки сохранятся."
-        : "Сначала будут проверены каналы и права бота, затем мониторинг начнётся.",
+        : "Сначала проверятся каналы и права бота, затем пересылка начнётся сразу.",
       okLabel: currentlyRunning ? "Остановить" : "Запустить",
       danger: currentlyRunning,
     });
     if (!confirmed) return;
 
-    const button = event.currentTarget;
     setBusy(button, true);
     try {
       const saved = await api("/api/config", { method: "PUT", body: JSON.stringify(readForm()) });
-      config = saved.config;
+      config = { ...config, ...saved.config };
       renderSources();
-      await api("/api/service", {
-        method: "PUT",
-        body: JSON.stringify({ enabled: !currentlyRunning }),
-      });
-      showNotice(currentlyRunning ? "Пересылка остановлена." : "Настройки проверены, пересылка запущена.", "success");
+      await api("/api/service", { method: "PUT", body: JSON.stringify({ enabled: !currentlyRunning }) });
+      showNotice(currentlyRunning ? "Пересылка остановлена." : "Пересылка запущена.", "success");
       hapticResult("success");
     } catch (error) {
       showNotice(error.message, "error");
       haptic("heavy");
     } finally {
       setBusy(button, false);
-      try {
-        await refreshStatus();
-      } catch (error) {
-        showNotice(`Не удалось обновить статус: ${error.message}`, "error");
-      }
+      try { await refreshStatus(); } catch (error) { showNotice(`Не удалось обновить статус: ${error.message}`, "error"); }
     }
   });
 
   nodes.refresh.addEventListener("click", async () => {
     haptic("light");
+    try { await refreshStatus(); showNotice("Данные обновлены.", "success"); }
+    catch (error) { showNotice(error.message, "error"); }
+  });
+
+  nodes.signatureSave.addEventListener("click", async (event) => {
+    const enabled = nodes.signatureEnabled.checked;
+    const text = nodes.signatureText.value.trim();
+    if (enabled && !text) {
+      showNotice("Введите текст подписи или отключите её.", "error");
+      haptic("heavy");
+      return;
+    }
+    const button = event.currentTarget;
+    setBusy(button, true);
     try {
-      await refreshStatus();
-      showNotice("Данные обновлены.", "success");
+      const result = await api("/api/signature", { method: "PUT", body: JSON.stringify({ enabled, text }) });
+      config.signature_enabled = result.signature_enabled;
+      config.signature_text = result.signature_text;
+      hapticResult("success");
+      showNotice(result.signature_enabled ? "Подпись сохранена." : "Подпись отключена.", "success");
     } catch (error) {
       showNotice(error.message, "error");
+      haptic("heavy");
+    } finally {
+      setBusy(button, false);
     }
   });
 
   setInterval(() => {
-    if (!initData) return;
+    if (!initData || !pinUnlocked) return;
     refreshStatus().catch(() => {});
   }, AUTO_REFRESH_MS);
 
-  (async () => {
+  async function start() {
     if (!initData) {
       nodes.boot.hidden = true;
+      nodes.app.hidden = false;
       showNotice("Откройте Mini App через кнопку в чате с вашим Telegram-ботом.", "error");
       return;
     }
+    if (isDemo) showNotice("Демо-режим: данные имитированы локально, ничего никуда не пересылается.");
     try {
-      if (isDemo) {
-        showNotice("Демо-режим: данные имитированы локально, ничего никуда не пересылается.");
+      const pinStatus = await api("/api/pin/status");
+      pinConfigured = Boolean(pinStatus.enabled);
+      if (pinConfigured) {
+        nodes.boot.hidden = true;
+        const ok = await pinGate.open("unlock", true);
+        if (!ok) return;
       }
+      pinUnlocked = true;
+      nodes.app.hidden = false;
       await loadConfig();
+      refreshPinSecurity().catch(() => {});
       await refreshStatus();
     } catch (error) {
+      nodes.app.hidden = false;
       showNotice(error.message, "error");
     } finally {
       nodes.boot.hidden = true;
     }
-  })();
+  }
+
+  start();
 })();

@@ -272,8 +272,15 @@ def download_media(media):
         response.close()
 
 
-def publish_post(post, destination):
-    text = post.get("text", "").strip()
+def _append_signature(text, signature):
+    signature = (signature or "").strip()
+    if not signature:
+        return text
+    return f"{text}\n\n{signature}" if text else signature
+
+
+def publish_post(post, destination, signature=""):
+    text = _append_signature(post.get("text", "").strip(), signature)
     media_items = post.get("media", [])
     if len(media_items) > 1:
         caption_parts = split_text(text, MAX_CAPTION_UNITS) if text else []

@@ -8,7 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlencode
 
-from app import auth, database, telegram, worker
+from fastapi import HTTPException
+
+from app import auth, database, pin, telegram, worker
 
 
 class ParserTests(unittest.TestCase):
@@ -85,6 +87,150 @@ class MessageTests(unittest.TestCase):
         calls = send.call_args_list
         self.assertEqual([call.args[0].rsplit("/", 1)[-1] for call in calls], ["sendMediaGroup", "sendMediaGroup"])
         self.assertEqual([len(json.loads(call.kwargs["data"]["media"])) for call in calls], [10, 2])
+
+    def test_signature_is_appended_to_text_post(self):
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch("app.telegram.requests.post", return_value=self._bot_response()) as send:
+            telegram.publish_post({"text": "Новость", "media": []}, "@dest", "Подпишитесь: @channel")
+
+        text = send.call_args.kwargs["data"]["text"]
+        self.assertEqual(text, "Новость\n\nПодпишитесь: @channel")
+
+    def test_signature_is_appended_to_photo_caption(self):
+        with patch.object(telegram, "download_media", return_value=("photo.jpg", b"photo")), \
+             patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch("app.telegram.requests.post", return_value=self._bot_response()) as send:
+            telegram.publish_post(
+                {"text": "Фото дня", "media": [{"type": "photo", "url": "unused"}]},
+                "@dest",
+                "Наш канал",
+            )
+
+        data = send.call_args_list[0].kwargs["data"]
+        self.assertIn("caption", data)
+        self.assertEqual(data["caption"], "Фото дня\n\nНаш канал")
+
+    def test_signature_only_post_without_media(self):
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch("app.telegram.requests.post", return_value=self._bot_response()) as send:
+            telegram.publish_post({"text": "", "media": []}, "@dest", "Только подпись")
+
+        self.assertEqual(send.call_args.kwargs["data"]["text"], "Только подпись")
+
+    def test_empty_signature_leaves_text_untouched(self):
+        post = {"text": "Без изменений", "media": []}
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch("app.telegram.requests.post", return_value=self._bot_response()) as send:
+            telegram.publish_post(post, "@dest", "")
+
+        self.assertEqual(send.call_args.kwargs["data"]["text"], "Без изменений")
+
+
+class PinTests(unittest.TestCase):
+    def test_hash_and_verify_roundtrip(self):
+        stored = pin.hash_pin("1234")
+        self.assertTrue(stored.startswith("pbkdf2$"))
+        self.assertTrue(pin.verify_pin(stored, "1234"))
+        self.assertFalse(pin.verify_pin(stored, "9999"))
+
+    def test_hash_is_different_each_time(self):
+        self.assertNotEqual(pin.hash_pin("1234"), pin.hash_pin("1234"))
+
+    def test_verify_rejects_garbage(self):
+        self.assertFalse(pin.verify_pin("", "1234"))
+        self.assertFalse(pin.verify_pin("not-a-hash", "1234"))
+        self.assertFalse(pin.verify_pin(None, "1234"))
+
+    def test_lockout_starts_after_free_attempts(self):
+        for fails in range(pin.LOCK_FREE_ATTEMPTS):
+            self.assertEqual(pin.lockout_seconds(fails), 0)
+        self.assertGreater(pin.lockout_seconds(pin.LOCK_FREE_ATTEMPTS + 1), 0)
+        self.assertLessEqual(pin.lockout_seconds(100), pin.LOCK_MAX_SECONDS)
+
+
+class SignatureConfigTests(unittest.TestCase):
+    def test_default_config_has_signature_fields(self):
+        config = database.DEFAULT_CONFIG
+        self.assertIn("signature_enabled", config)
+        self.assertIn("signature_text", config)
+        self.assertFalse(config["signature_enabled"])
+        self.assertEqual(config["signature_text"], "")
+
+    def test_worker_passes_signature_to_publish_post(self):
+        config = {
+            "sources": ["source_one"],
+            "destination": "@destination",
+            "filter_enabled": False,
+            "filter_terms": "",
+            "filter_mode": "any",
+            "signature_enabled": True,
+            "signature_text": "Подписывайтесь: @example",
+            "enabled": True,
+        }
+        passed = {}
+        with patch.object(database, "get_config", return_value=config), \
+             patch.object(database, "get_cursor", return_value=1), \
+             patch.object(database, "set_cursor"), \
+             patch.object(database, "already_forwarded", return_value=False), \
+             patch.object(database, "write_history"), \
+             patch.object(database, "set_state"), \
+             patch.object(telegram, "fetch_public_posts",
+                          return_value=[{"id": "2", "text": "Новый пост", "media": []}]), \
+             patch.object(telegram, "publish_post",
+                          side_effect=lambda post, destination, signature="": passed.update(signature=signature) or True), \
+             patch.object(telegram, "BOT_TOKEN", "123:test"):
+            worker.poll_once()
+
+        self.assertEqual(passed, {"signature": "Подписывайтесь: @example"})
+
+
+class PinEndpointTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.original_path = database.DATABASE_PATH
+        database.DATABASE_PATH = Path(self.tmp_dir.name) / "test.sqlite3"
+        database.initialize()
+
+    def tearDown(self):
+        database.DATABASE_PATH = self.original_path
+        self.tmp_dir.cleanup()
+
+    def _user(self):
+        return {"id": 42, "first_name": "Owner"}
+
+    def test_setup_verify_change_disable_flow(self):
+        from app.main import (
+            PinChangePayload,
+            PinPayload,
+            pin_change,
+            pin_disable,
+            pin_setup,
+            pin_status,
+            pin_verify,
+        )
+
+        self.assertEqual(pin_status(_user=None), {"enabled": False})
+
+        pin_setup(PinPayload(pin="1234"), _user=None)
+        self.assertTrue(pin_status(_user=None)["enabled"])
+
+        with self.assertRaises(HTTPException):
+            pin_verify(PinPayload(pin="0000"), _user=None)
+
+        self.assertTrue(pin_verify(PinPayload(pin="1234"), _user=None)["ok"])
+
+        pin_change(PinChangePayload(current_pin="1234", pin="5678"), _user=None)
+        self.assertTrue(pin_verify(PinPayload(pin="5678"), _user=None)["ok"])
+
+        pin_disable(PinPayload(pin="5678"), _user=None)
+        self.assertFalse(pin_status(_user=None)["enabled"])
+
+    def test_setup_refuses_second_pin(self):
+        from app.main import PinPayload, pin_setup
+
+        pin_setup(PinPayload(pin="1234"), _user=None)
+        with self.assertRaises(HTTPException):
+            pin_setup(PinPayload(pin="9999"), _user=None)
 
 
 class RetryTests(unittest.TestCase):
@@ -211,7 +357,7 @@ class WorkerTests(unittest.TestCase):
              patch.object(database, "write_history"), \
              patch.object(database, "set_state"), \
              patch.object(telegram, "fetch_public_posts", side_effect=lambda source: feeds[source]), \
-             patch.object(telegram, "publish_post", side_effect=lambda post, destination: sent.append(destination) or True), \
+             patch.object(telegram, "publish_post", side_effect=lambda post, destination, signature="": sent.append(destination) or True), \
              patch.object(telegram, "BOT_TOKEN", "123:test"):
             worker.poll_once()
 
@@ -238,12 +384,42 @@ class WorkerTests(unittest.TestCase):
              patch.object(database, "write_history"), \
              patch.object(database, "set_state"), \
              patch.object(telegram, "fetch_public_posts", side_effect=lambda source: feeds[source]), \
-             patch.object(telegram, "publish_post", side_effect=lambda post, destination: sent.append(destination) or True), \
+             patch.object(telegram, "publish_post", side_effect=lambda post, destination, signature="": sent.append(destination) or True), \
              patch.object(telegram, "BOT_TOKEN", "123:test"):
             worker.poll_once()
 
         self.assertEqual(sent, [])
         self.assertEqual(cursors, {"source_one": 2})
+
+
+class MenuButtonTests(unittest.TestCase):
+    class Response:
+        ok = True
+        status_code = 200
+
+        def json(self):
+            return {"ok": True, "result": True}
+
+    def test_menu_button_is_json_encoded_for_admin_chat(self):
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch("app.telegram.requests.post", return_value=self.Response()) as send:
+            worker.configure_menu_button("https://example.com/", 555)
+
+        data = send.call_args.kwargs["data"]
+        self.assertEqual(data.get("chat_id"), 555)
+        self.assertIsInstance(data["menu_button"], str)
+        menu = json.loads(data["menu_button"])
+        self.assertEqual(menu["type"], "web_app")
+        self.assertEqual(menu["web_app"]["url"], "https://example.com/")
+
+    def test_menu_button_defaults_when_no_admin_id(self):
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch("app.telegram.requests.post", return_value=self.Response()) as send:
+            worker.configure_menu_button("https://example.com", None)
+
+        data = send.call_args.kwargs["data"]
+        self.assertNotIn("chat_id", data)
+        self.assertIsInstance(data["menu_button"], str)
 
 
 if __name__ == "__main__":

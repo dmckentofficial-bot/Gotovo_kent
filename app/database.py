@@ -12,6 +12,8 @@ DEFAULT_CONFIG = {
     "filter_enabled": False,
     "filter_terms": "",
     "filter_mode": "any",
+    "signature_enabled": False,
+    "signature_text": "",
     "enabled": False,
 }
 
