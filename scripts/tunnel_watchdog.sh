@@ -57,9 +57,33 @@ worker.set_app_url("$url")
 # Только общая кнопка: лишние вызовы роняют флуд-лимит Telegram.
 try:
     worker.configure_menu_button("$url", None)
+    database.set_state("menu_url", "$url")
     print("$LOG_PREFIX кнопка меню -> $url")
 except Exception as exc:
     print("$LOG_PREFIX кнопка меню не обновилась:", exc)
+PY
+}
+
+# Кнопка могла протухнуть раньше адреса (флуд-лимит): добиваем её каждый тик.
+ensure_menu() {
+  local url="$1"
+  set -a && [ -f .env ] && . ./.env && set +a
+  export APP_URL="$url"
+  .venv/bin/python - <<PY 2>/dev/null
+import os
+from app import worker, database
+stored = ""
+try:
+    stored = database.get_state("menu_url", "")
+except Exception:
+    pass
+if stored != "$url":
+    try:
+        worker.configure_menu_button("$url", None)
+        database.set_state("menu_url", "$url")
+        print("$LOG_PREFIX кнопка меню догнана -> $url")
+    except Exception as exc:
+        print("$LOG_PREFIX кнопка меню ждёт (флуд):", str(exc)[:80])
 PY
 }
 
@@ -68,6 +92,7 @@ while true; do
   url="$(current_url)"
   if tunnel_alive "$url"; then
     echo "$LOG_PREFIX ok: $url"
+    ensure_menu "$url"
   else
     echo "$LOG_PREFIX туннель упал (${url:-пустой}) — поднимаю новый"
     url="$(start_tunnel)"
