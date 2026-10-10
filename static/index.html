@@ -98,6 +98,20 @@
 
         <div id="stats" class="stats"></div>
 
+        <div class="mini-grid">
+          <div class="mini-card glass">
+            <p class="mini-label">ТОКЕН БОТА</p>
+            <input id="bot-token" class="mini-input" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="…">
+            <p class="mini-hint" id="bot-token-hint">Не задан</p>
+          </div>
+          <div class="mini-card glass">
+            <p class="mini-label">ID ВЛАДЕЛЬЦА</p>
+            <input id="bot-owner" class="mini-input" type="text" inputmode="numeric" autocomplete="off" placeholder="123456789">
+            <p class="mini-hint" id="bot-owner-hint">Ваш Telegram ID</p>
+          </div>
+        </div>
+        <button id="bot-save" class="mini-save" type="button">Применить бота</button>
+
         <div class="section-head">
           <h2 class="section-title">История</h2>
           <button id="refresh" class="icon-button" type="button" aria-label="Обновить">↻</button>
@@ -148,17 +162,6 @@
             </select>
           </div>
           <p class="hint">Без фильтра пересылаются все новые посты источников.</p>
-        </div>
-
-        <div class="card">
-          <p class="eyebrow">БЕЗОПАСНОСТЬ</p>
-          <h2 class="section-title">PIN-код панели</h2>
-          <p class="hint" id="pin-security-hint">Код запрашивается при каждом открытии приложения.</p>
-          <div class="button-row">
-            <button id="pin-setup" class="button primary" type="button">Установить код</button>
-            <button id="pin-change" class="button secondary" type="button" hidden>Сменить код</button>
-            <button id="pin-disable" class="button danger" type="button" hidden>Отключить</button>
-          </div>
         </div>
 
         <div class="card">

@@ -333,7 +333,7 @@ class AdminKeyLockoutTests(unittest.TestCase):
             self.assertEqual(ctx.exception.status_code, 429)
             # правильный пароль работает даже при блокировке
             user = main.require_admin("", "4322")
-            self.assertEqual(user["auth_method"], "key")
+            self.assertEqual(user["auth_method"], "password")
             self.assertEqual(database.get_state("key_locked_until"), "0")
 
 

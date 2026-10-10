@@ -279,6 +279,38 @@ h1, h2, h3, p { margin: 0; }
 
 /* ---------- stats ---------- */
 .stats { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0; }
+/* ---------- mini windows: bot token & owner ---------- */
+.mini-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 18px 0 10px; }
+.mini-card { padding: 12px 14px 10px; border-radius: var(--radius-md); text-align: left; }
+.mini-label { margin: 0; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.mini-input {
+  width: 100%;
+  margin-top: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--on-surface);
+  font-size: 14px;
+  outline: none;
+}
+.mini-input:focus { border-color: var(--brand-primary); }
+.mini-hint { margin: 6px 0 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.mini-save {
+  width: 100%;
+  padding: 11px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  background: linear-gradient(150deg, var(--brand-primary), var(--brand-secondary));
+  color: var(--on-brand-primary);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter .15s ease, transform .1s ease;
+}
+.mini-save:active { transform: scale(.98); }
+.mini-save:hover { filter: brightness(1.08); }
+.mini-save:disabled { opacity: .6; cursor: wait; }
 .chip {
   display: inline-flex;
   align-items: baseline;

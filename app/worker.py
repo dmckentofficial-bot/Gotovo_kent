@@ -41,6 +41,12 @@ def poll_once():
 
     signature = config.get("signature_text", "").strip() if config.get("signature_enabled") else ""
 
+    try:
+        destination = telegram.normalize_destination(config["destination"])
+    except ValueError as exc:
+        database.set_state("last_error", f"Канал назначения: {exc}")
+        return
+
     for source in config["sources"]:
         try:
             posts = telegram.fetch_public_posts(source)
@@ -64,7 +70,7 @@ def poll_once():
                     database.set_cursor(source, post_id)
                     continue
                 try:
-                    if telegram.publish_post(post, config["destination"], signature):
+                    if telegram.publish_post(post, destination, signature):
                         database.write_history(post, source, "forwarded")
                     else:
                         database.write_history(post, source, "skipped", "Пустой пост без поддерживаемого медиа.")
@@ -100,19 +106,24 @@ def validate_configuration():
     if config["filter_enabled"] and not config["filter_terms"].strip():
         raise ValueError("Укажите слова или хэштеги для фильтра.")
 
+    try:
+        destination = telegram.normalize_destination(config["destination"])
+    except ValueError as exc:
+        raise ValueError(f"Канал назначения: {exc}") from exc
+
     results = []
     for source in config["sources"]:
         posts = telegram.fetch_public_posts(source)
         results.append({"source": source, "available": True, "posts": len(posts)})
     bot = telegram.bot_request("getMe")
-    chat = telegram.bot_request("getChat", {"chat_id": config["destination"]})
+    chat = telegram.bot_request("getChat", {"chat_id": destination})
     if chat.get("type") != "channel":
         raise RuntimeError(
             "Канал назначения должен быть настоящим Telegram-каналом. "
             "Укажите @username канала, а не личную переписку."
         )
     member = telegram.bot_request(
-        "getChatMember", {"chat_id": config["destination"], "user_id": bot["id"]}
+        "getChatMember", {"chat_id": destination, "user_id": bot["id"]}
     )
     if member.get("status") not in {"administrator", "creator"}:
         raise RuntimeError("Добавьте бота администратором в канал назначения.")
@@ -121,7 +132,7 @@ def validate_configuration():
     return {
         "sources": results,
         "bot": bot.get("username", ""),
-        "destination": chat.get("title") or chat.get("username") or config["destination"],
+        "destination": chat.get("title") or chat.get("username") or destination,
     }
 
 

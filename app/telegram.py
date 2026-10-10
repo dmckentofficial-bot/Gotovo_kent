@@ -5,9 +5,15 @@ import os
 import re
 import time
 from html.parser import HTMLParser
+from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
+from dotenv import load_dotenv
+
+
+# Переменные окружения из .env (в облаке файла нет — load_dotenv просто ничего не сделает).
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 MAX_PHOTO_BYTES = 10 * 1024 * 1024
@@ -19,8 +25,21 @@ MEDIA_HOSTS = ("telesco.pe", "telegram.org", "telegram-cdn.org")
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 
 
+def get_bot_token():
+    """Текущий токен бота (может меняться из интерфейса без перезапуска сервера)."""
+    return BOT_TOKEN
+
+
+def set_bot_token(token):
+    """Заменяет токен бота на лету и синхронизирует его с окружением."""
+    global BOT_TOKEN
+    BOT_TOKEN = (token or "").strip()
+    os.environ["TELEGRAM_BOT_TOKEN"] = BOT_TOKEN
+    return BOT_TOKEN
+
+
 def _bot_request(method, data=None, files=None, timeout=30, max_attempts=4):
-    if not BOT_TOKEN:
+    if not get_bot_token():
         raise RuntimeError("На сервере не задан TELEGRAM_BOT_TOKEN.")
 
     def sleep_backoff(attempt, retry_after=None):
@@ -83,6 +102,22 @@ def normalize_channel(value):
     if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
         raise ValueError("Некорректный username публичного канала.")
     return username
+
+
+def normalize_destination(value):
+    """Приводит канал назначения к виду, пригодному для chat_id Bot API.
+
+    Публичные каналы: '@username', 'username', 't.me/username',
+    'https://t.me/username' → '@username' (раньше сырой URL уходил в Bot API
+    и вызывал ошибку 400 «chat not found»).
+    Числовые ID (например, '8967870222' или '-100...') остаются как есть —
+    тип чата затем проверяет Bot API через getChat.
+    """
+    value = value.strip()
+    if value.lstrip("-").isdigit():
+        return value
+    username = normalize_channel(value)
+    return f"@{username}"
 
 
 class PublicFeedParser(HTMLParser):

@@ -25,6 +25,12 @@
     stats: $("#stats"),
     history: $("#history"),
     refresh: $("#refresh"),
+    // bot & owner
+    botToken: $("#bot-token"),
+    botOwner: $("#bot-owner"),
+    botSave: $("#bot-save"),
+    botTokenHint: $("#bot-token-hint"),
+    botOwnerHint: $("#bot-owner-hint"),
     // settings
     sources: $("#sources"),
     sourceCounter: $("#source-counter"),
@@ -34,10 +40,6 @@
     filterTerms: $("#filter-terms"),
     filterMode: $("#filter-mode"),
     filterOptions: $("#filter-options"),
-    pinSetup: $("#pin-setup"),
-    pinChange: $("#pin-change"),
-    pinDisable: $("#pin-disable"),
-    pinHint: $("#pin-security-hint"),
     accessSetup: $("#access-setup"),
     save: $("#save"),
     test: $("#test"),
@@ -927,41 +929,57 @@
     return { open, renderDots };
   })();
 
-  /* ---------- PIN management in settings ---------- */
-  async function refreshPinSecurity() {
-    const status = await api("/api/pin/status");
-    pinConfigured = Boolean(status.enabled);
-    nodes.pinSetup.hidden = pinConfigured;
-    nodes.pinChange.hidden = !pinConfigured;
-    nodes.pinDisable.hidden = !pinConfigured;
-    nodes.pinHint.textContent = pinConfigured
-      ? "Код включён и запрашивается при каждом открытии приложения."
-      : "Код не установлен. Установите его, чтобы закрыть панель паролем.";
+  /* ---------- bot & owner management ---------- */
+  async function loadBotSettings() {
+    let settings = null;
+    try { settings = await api("/api/bot"); } catch (_) { return; }
+    if (!settings) return;
+    if (nodes.botToken) {
+      nodes.botToken.value = "";
+      nodes.botToken.placeholder = settings.token_hint || "не задан";
+      if (nodes.botTokenHint) {
+        nodes.botTokenHint.textContent = settings.token_hint
+          ? `Текущий: ${settings.token_hint}`
+          : "Введите токен от @BotFather";
+      }
+    }
+    if (nodes.botOwner) {
+      nodes.botOwner.value = settings.admin_id || "";
+      if (nodes.botOwnerHint) nodes.botOwnerHint.textContent = "Ваш Telegram ID";
+    }
+    if (nodes.botLine) {
+      nodes.botLine.textContent = settings.bot_username ? `@${settings.bot_username}` : "";
+    }
   }
 
-  nodes.pinSetup.addEventListener("click", async () => {
-    haptic("light");
-    const ok = await pinGate.open("setup", false);
-    if (ok) { showNotice("PIN-код установлен.", "success"); await refreshPinSecurity(); }
-  });
-
-  nodes.pinChange.addEventListener("click", async () => {
-    haptic("light");
-    const ok = await pinGate.open("change", true);
-    if (ok) { showNotice("PIN-код изменён.", "success"); await refreshPinSecurity(); }
-  });
-
-  nodes.pinDisable.addEventListener("click", async () => {
-    haptic("light");
-    const confirmed = await askConfirm({
-      title: "Отключить PIN-код?",
-      message: "Панель будет открываться без запроса кода.",
-      okLabel: "Отключить",
-      danger: true,
-    });
-    if (!confirmed) return;
-    const ok = await pinGate.open("disable", true);
-    if (ok) { showNotice("PIN-код отключён.", "success"); await refreshPinSecurity(); }
+  nodes.botSave.addEventListener("click", async (event) => {
+    setBusy(event.currentTarget, true);
+    try {
+      const token = nodes.botToken.value.trim();
+      const adminId = nodes.botOwner.value.trim();
+      if (!token && !adminId) {
+        showNotice("Введите токен бота или ID владельца.", "error");
+        return;
+      }
+      const result = await api("/api/bot", {
+        method: "PUT",
+        body: JSON.stringify({ token, admin_id: adminId }),
+      });
+      nodes.botToken.value = "";
+      nodes.botToken.placeholder = result.token_hint || "не задан";
+      if (nodes.botTokenHint) {
+        nodes.botTokenHint.textContent = result.token_hint ? `Текущий: ${result.token_hint}` : "Введите токен от @BotFather";
+      }
+      if (result.bot_username && nodes.botLine) nodes.botLine.textContent = `@${result.bot_username}`;
+      showNotice(result.bot_username ? `Бот @${result.bot_username} применён.` : "Настройки бота сохранены.", "success");
+      hapticResult("success");
+    } catch (error) {
+      showNotice(error.message, "error");
+      haptic("heavy");
+    } finally {
+      setBusy(event.currentTarget, false);
+      await refreshStatus().catch(() => {});
+    }
   });
 
   nodes.accessSetup.addEventListener("click", async () => {
@@ -1123,7 +1141,7 @@
       nodes.app.hidden = false;
       if (byPassword) hapticResult("success");
       await loadConfig();
-      refreshPinSecurity().catch(() => {});
+      await loadBotSettings();
       await refreshStatus();
     } catch (error) {
       nodes.app.hidden = false;
