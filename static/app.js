@@ -1055,6 +1055,8 @@
           await refreshMtStatus();
           break;
         }
+        // QR быстро протухает: обновляем картинку каждый цикл, сервер отдаст свежий.
+        nodes.mtQrImage.src = `/api/mt/qr/image?t=${Date.now()}`;
         if (!info.waiting) break;
       }
     } finally {

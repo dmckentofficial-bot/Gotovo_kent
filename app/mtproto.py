@@ -163,8 +163,21 @@ def _qr_png_bytes(url):
 
 
 async def _qr_png():
+    global _qr_login
     if _qr_login is None:
         raise RuntimeError("Сначала нажмите «Войти по QR-коду».")
+    # QR живёт около минуты: протухший обновляем, чтобы на экране всегда был свежий.
+    try:
+        import datetime as _dt
+
+        expires = getattr(_qr_login, "expires", None)
+        if expires is not None:
+            now = _dt.datetime.now(_dt.timezone.utc)
+            exp = expires if expires.tzinfo else expires.replace(tzinfo=_dt.timezone.utc)
+            if (exp - now).total_seconds() < 45:
+                await _qr_login.recreate()
+    except Exception:  # noqa: BLE001 - старый код ещё валиден, отдаём как есть
+        pass
     return _qr_png_bytes(_qr_login.url)
 
 
