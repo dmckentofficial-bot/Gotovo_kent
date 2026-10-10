@@ -802,6 +802,7 @@ class MenuButtonTests(unittest.TestCase):
         self.assertIn(555, by_chat)    # кнопка в чате владельца
         menu = json.loads(by_chat[None]["menu_button"])
         self.assertEqual(menu["web_app"]["url"], "https://example.com/")
+        self.assertEqual(menu["text"], "Открыть KEN-T")
 
 
 class MtprotoTests(unittest.TestCase):
@@ -1120,8 +1121,9 @@ class BotCommandsTests(unittest.TestCase):
 
         self.assertEqual(len(payloads), 1)
         markup = json.loads(payloads[0]["reply_markup"])
-        button = markup["keyboard"][0][0]
-        self.assertEqual(button["web_app"]["url"], "https://example.com/")
+        flat = [button.get("text", "") for row in markup["keyboard"] for button in row]
+        self.assertIn("📊 Статус", flat)
+        self.assertFalse(any(button.get("web_app") for row in markup["keyboard"] for button in row))
 
     def test_answer_counter_increments_and_errors_recorded(self):
         from app import database, telegram, worker
@@ -1282,10 +1284,9 @@ class BotCommandsTests(unittest.TestCase):
 
         markup = json.loads(payloads[0]["reply_markup"])
         flat = [button.get("text", "") for row in markup["keyboard"] for button in row]
-        self.assertIn("📱 Открыть приложение", flat)
         self.assertIn("📊 Статус", flat)
-        app_button = [b for row in markup["keyboard"] for b in row if b.get("web_app")][0]
-        self.assertEqual(app_button["web_app"]["url"], "https://example.com/")
+        self.assertIn("📢 Мои каналы", flat)
+        self.assertFalse(any(button.get("web_app") for row in markup["keyboard"] for button in row))
 
     def test_start_command_answers_with_help(self):
         from app import telegram, worker

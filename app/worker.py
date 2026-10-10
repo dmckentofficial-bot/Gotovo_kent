@@ -48,7 +48,6 @@ BTN_ADD = "➕ Добавить"
 BTN_DEL = "➖ Убрать"
 BTN_TEST = "✅ Проверка"
 BTN_HELP = "❓ Помощь"
-BTN_APP = "📱 Открыть приложение"
 
 
 def _owner_id():
@@ -75,17 +74,8 @@ def set_app_url(url):
     return clean
 
 
-def _mini_app_keyboard():
-    """Клавиатура с кнопкой Mini App (рядом с полем ввода)."""
-    url = _app_url()
-    if not url:
-        return None
-    return {"keyboard": [[{"text": BTN_APP, "web_app": {"url": f"{url}/"}}]],
-            "resize_keyboard": True, "is_persistent": True}
-
-
 def _main_keyboard():
-    """Полное меню как в Mini App: управление + кнопка приложения."""
+    """Полное меню как в Mini App (без нижней кнопки приложения — она сбоку)."""
     config = database.get_config()
     toggle = BTN_STOP if config.get("enabled") else BTN_RUN
     rows = [
@@ -95,21 +85,14 @@ def _main_keyboard():
         [{"text": BTN_ADD}, {"text": BTN_DEL}],
         [{"text": BTN_HELP}],
     ]
-    url = _app_url()
-    if url:
-        rows.insert(0, [{"text": BTN_APP, "web_app": {"url": f"{url}/"}}])
     return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
 
 
 def _answer_private(chat_id, text, keyboard=False):
     try:
         payload = {"chat_id": chat_id, "text": text}
-        if keyboard == "main":
+        if keyboard:
             payload["reply_markup"] = json.dumps(_main_keyboard())
-        elif keyboard:
-            markup = _mini_app_keyboard()
-            if markup:
-                payload["reply_markup"] = json.dumps(markup)
         telegram.bot_request("sendMessage", payload, timeout=30)
         database.set_state("bot_answers_sent", str(int(database.get_state("bot_answers_sent", "0") or 0) + 1))
     except RuntimeError as exc:
@@ -760,7 +743,7 @@ def configure_menu_button(app_url, admin_id=None):
         return
     menu_button = {
         "type": "web_app",
-        "text": "Открыть приложение",
+        "text": "Открыть KEN-T",
         "web_app": {"url": app_url.rstrip("/") + "/"},
     }
     targets = [None]
