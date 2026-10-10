@@ -751,5 +751,94 @@ class MtprotoTests(unittest.TestCase):
             tmp_dir.cleanup()
 
 
+class DirectTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+
+        from app import database
+
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.original_path = database.DATABASE_PATH
+        database.DATABASE_PATH = Path(self.tmp_dir.name) / "test.sqlite3"
+        database.initialize()
+        database.set_config({
+            "sources": [], "destination": "@destination", "filter_enabled": False,
+            "filter_terms": "", "filter_mode": "any", "enabled": True,
+        })
+        database.set_state("admin_telegram_id", "777")
+
+    def tearDown(self):
+        from app import database
+
+        database.DATABASE_PATH = self.original_path
+        self.tmp_dir.cleanup()
+
+    def _updates(self, messages):
+        return [
+            {"update_id": 100 + index, "message": message}
+            for index, message in enumerate(messages)
+        ]
+
+    def test_forwarded_dm_is_copied_to_destination(self):
+        from app import database, telegram, worker
+
+        message = {
+            "message_id": 5, "text": "Смотри пост",
+            "chat": {"id": 777, "type": "private"}, "from": {"id": 777},
+        }
+        calls = []
+
+        def fake_bot(method, data=None, files=None, timeout=30):
+            calls.append(method)
+            if method == "getUpdates":
+                return self._updates([message]) if len(calls) == 1 else []
+            return {"message_id": 9}
+
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "bot_request", side_effect=fake_bot):
+            worker.drain_direct_messages()
+            worker.drain_direct_messages()
+
+        self.assertEqual(calls.count("copyMessage"), 1)
+        history = database.recent_history()
+        self.assertEqual(history[0]["source"], "direct")
+        self.assertEqual(history[0]["status"], "forwarded")
+
+    def test_stranger_messages_are_ignored(self):
+        from app import database, telegram, worker
+
+        message = {
+            "message_id": 6, "text": "Спам",
+            "chat": {"id": 999, "type": "private"}, "from": {"id": 999},
+        }
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "bot_request", return_value=self._updates([message])):
+            worker.drain_direct_messages()
+
+        self.assertEqual(database.recent_history(), [])
+        self.assertEqual(database.get_state("bot_updates_offset"), "101")
+
+    def test_start_command_answers_with_help(self):
+        from app import telegram, worker
+
+        message = {
+            "message_id": 7, "text": "/start",
+            "chat": {"id": 777, "type": "private"}, "from": {"id": 777},
+        }
+        sent = []
+
+        def fake_bot(method, data=None, files=None, timeout=30):
+            if method == "getUpdates":
+                return self._updates([message])
+            sent.append((method, (data or {}).get("text", "")))
+            return {"message_id": 1}
+
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "bot_request", side_effect=fake_bot):
+            worker.drain_direct_messages()
+
+        self.assertTrue(any(method == "sendMessage" and "перешлите" in text for method, text in sent))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import threading
 import time
@@ -8,6 +9,130 @@ from . import telegram
 
 
 POLL_SECONDS = 60
+DIRECT_SOURCE = "direct"
+
+HELP_TEXT = (
+    "Я принимаю пересланные посты и публикую их в канал назначения один в один: "
+    "текст, фото и видео в оригинале, кнопки.\n\n"
+    "Просто перешлите мне любой пост из любого канала.\n"
+    "Команды: /start — помощь, /id — ваш Telegram ID."
+)
+
+
+def _owner_id():
+    raw = (database.get_state("admin_telegram_id", "") or os.environ.get("ADMIN_TELEGRAM_ID", "")).strip()
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _direct_media_label(message):
+    kinds = []
+    for key, label in (
+        ("photo", "photo"), ("video", "video"), ("video_note", "round"),
+        ("voice", "voice"), ("sticker", "sticker"), ("animation", "gif"),
+        ("document", "file"), ("poll", "poll"), ("story", "story"),
+    ):
+        if key in message:
+            kinds.append(label)
+    return kinds
+
+
+def _answer_private(chat_id, text):
+    try:
+        telegram.bot_request("sendMessage", {"chat_id": chat_id, "text": text}, timeout=30)
+    except RuntimeError:
+        pass
+
+
+def drain_direct_messages():
+    """Режим «бот-приёмник»: пересланное владельцем в личку — 1-в-1 в канал.
+
+    Бот уже держит сообщение (его переслали ему), поэтому copyMessage идёт
+    серверными file_id: оригиналы фото/видео, entities, кнопки — без потерь
+    и без лимита 49 МБ на скачивание. Чужие сообщения игнорируются.
+    """
+    if not telegram.get_bot_token():
+        return
+    config = database.get_config()
+    if not config.get("destination"):
+        return
+    try:
+        destination = telegram.normalize_destination(config["destination"])
+    except ValueError:
+        return
+    owner_id = _owner_id()
+
+    params = {"timeout": 20, "allowed_updates": json.dumps(["message"])}
+    try:
+        offset = int(database.get_state("bot_updates_offset", "") or 0)
+    except ValueError:
+        offset = 0
+    if offset:
+        params["offset"] = offset
+    try:
+        updates = telegram.bot_request("getUpdates", params, timeout=45)
+    except RuntimeError:
+        return
+    if not isinstance(updates, list):
+        return
+    for update in updates:
+        try:
+            update_id = int(update.get("update_id", 0))
+        except (TypeError, ValueError):
+            continue
+        database.set_state("bot_updates_offset", update_id + 1)
+        message = update.get("message") or {}
+        chat = message.get("chat") or {}
+        sender = message.get("from") or {}
+        message_id = message.get("message_id")
+        if chat.get("type") != "private" or not message_id:
+            continue
+        if owner_id is not None and sender.get("id") != owner_id:
+            continue
+        text = message.get("text", "")
+        if text.startswith("/start"):
+            _answer_private(chat.get("id"), HELP_TEXT)
+            continue
+        if text.startswith("/id"):
+            _answer_private(chat.get("id"), f"Ваш Telegram ID: {sender.get('id')}")
+            continue
+        preview = {
+            "id": str(message_id),
+            "text": text or message.get("caption", ""),
+            "media": [{"type": kind} for kind in _direct_media_label(message)],
+        }
+        try:
+            telegram.bot_request(
+                "copyMessage",
+                {"chat_id": destination, "from_chat_id": chat.get("id"), "message_id": message_id},
+                timeout=30,
+            )
+            database.write_history(preview, DIRECT_SOURCE, "forwarded")
+        except RuntimeError:
+            try:
+                telegram.bot_request(
+                    "forwardMessage",
+                    {"chat_id": destination, "from_chat_id": chat.get("id"), "message_id": message_id},
+                    timeout=30,
+                )
+                database.write_history(preview, DIRECT_SOURCE, "forwarded", "Скопировать не вышло — переслано с меткой.")
+            except RuntimeError as exc:
+                database.write_history(preview, DIRECT_SOURCE, "error", str(exc))
+
+
+def run(stop_event):
+    while not stop_event.is_set():
+        try:
+            poll_once()
+        except Exception as exc:
+            database.set_state("last_error", f"Ошибка цикла пересылки ({type(exc).__name__}).")
+        try:
+            drain_direct_messages()
+        except Exception as exc:
+            database.set_state("last_error", f"Ошибка приёма сообщений ({type(exc).__name__}).")
+        stop_event.wait(POLL_SECONDS)
 
 
 def _matches_filter(text, config):
@@ -140,15 +265,6 @@ def poll_once():
         except Exception as exc:
             database.set_state("last_error", f"@{source}: непредвиденная ошибка ({type(exc).__name__}).")
     database.set_state("last_checked", int(time.time()))
-
-
-def run(stop_event):
-    while not stop_event.is_set():
-        try:
-            poll_once()
-        except Exception as exc:
-            database.set_state("last_error", f"Ошибка цикла пересылки ({type(exc).__name__}).")
-        stop_event.wait(POLL_SECONDS)
 
 
 def validate_configuration():
