@@ -194,11 +194,18 @@ async def lifespan(_app):
         try:
             bot = telegram.bot_request("getMe")
             database.set_state("bot_username", bot.get("username", ""))
+            # Кнопка по умолчанию обязательна; личная кнопка владельца —
+            # best-effort (ID может принадлежать удалённому аккаунту).
+            worker.configure_menu_button(app_url, None)
             try:
                 admin_chat = int(admin_id)
             except ValueError:
                 admin_chat = None
-            worker.configure_menu_button(app_url, admin_chat)
+            if admin_chat is not None:
+                try:
+                    worker.configure_menu_button(app_url, admin_chat)
+                except RuntimeError as exc:
+                    logger.warning("Личная кнопка меню не обновлена: %s", exc)
             database.set_state("menu_error", "")
         except RuntimeError as exc:
             database.set_state("menu_error", str(exc))
@@ -333,7 +340,13 @@ def put_bot(payload: BotPayload, _user=Depends(require_admin)):
     app_url = os.environ.get("APP_URL") or os.environ.get("RENDER_EXTERNAL_URL", "")
     if telegram.get_bot_token() and app_url:
         try:
-            worker.configure_menu_button(app_url, int(new_admin) if new_admin.lstrip("-").isdigit() else None)
+            worker.configure_menu_button(app_url, None)
+            admin_chat = int(new_admin) if new_admin.lstrip("-").isdigit() else None
+            if admin_chat is not None:
+                try:
+                    worker.configure_menu_button(app_url, admin_chat)
+                except RuntimeError as exc:
+                    logger.warning("Личная кнопка меню не обновлена: %s", exc)
             database.set_state("menu_error", "")
         except RuntimeError as exc:
             database.set_state("menu_error", str(exc))
