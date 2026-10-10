@@ -35,7 +35,9 @@
     sources: $("#sources"),
     sourceCounter: $("#source-counter"),
     addSource: $("#add-source"),
-    destination: $("#destination"),
+    destinations: $("#destinations"),
+    destinationCounter: $("#destination-counter"),
+    addDestination: $("#add-destination"),
     filterEnabled: $("#filter-enabled"),
     filterTerms: $("#filter-terms"),
     filterMode: $("#filter-mode"),
@@ -87,7 +89,7 @@
     pinCancel: $("#pin-cancel"),
   };
 
-  let config = { sources: [], destination: "", filter_enabled: false, filter_terms: "", filter_mode: "any", signature_enabled: false, signature_text: "" };
+  let config = { sources: [], destination: "", destinations: [], filter_enabled: false, filter_terms: "", filter_mode: "any", signature_enabled: false, signature_text: "" };
   let pinConfigured = false;
   let pinUnlocked = false;
 
@@ -110,6 +112,7 @@
     config: {
       sources: ["channel_tech", "channel_news", "channel_sport", "channel_finance", "channel_design"],
       destination: "@my_destination",
+      destinations: ["@my_destination", "@my_second"],
       filter_enabled: true,
       filter_terms: "скидка\n#новости",
       filter_mode: "any",
@@ -176,6 +179,7 @@
         bot: "demo_forwarder_bot",
         sources: [...DEMOSTATE.config.sources],
         destination: DEMOSTATE.config.destination,
+        destinations: [...(DEMOSTATE.config.destinations || [DEMOSTATE.config.destination])],
         last_checked: DEMOSTATE.lastChecked,
         last_error: "",
         menu_error: "",
@@ -345,18 +349,31 @@
 
   function validateForm() {
     const errors = [];
-    markInvalid(nodes.destination, false);
     const sourceInputs = [...nodes.sources.querySelectorAll("input")];
     sourceInputs.forEach((input) => markInvalid(input, false));
+    const destinationInputs = [...nodes.destinations.querySelectorAll("input")];
+    destinationInputs.forEach((input) => markInvalid(input, false));
 
-    const destination = nodes.destination.value.trim();
-    if (!destination) {
-      errors.push("Укажите канал назначения.");
-      markInvalid(nodes.destination, true);
-    } else if (!usernameFrom(destination)) {
-      errors.push("Канал назначения — это @username или ссылка t.me.");
-      markInvalid(nodes.destination, true);
+    const destinationValues = destinationInputs.map((input) => input.value.trim()).filter(Boolean);
+    if (!destinationValues.length) {
+      errors.push("Добавьте хотя бы один свой канал.");
+      if (destinationInputs.length) markInvalid(destinationInputs[0], true);
     }
+    const seenDest = new Set();
+    destinationValues.forEach((value, index) => {
+      const username = usernameFrom(value);
+      if (!username || !USERNAME_RE.test(username)) {
+        errors.push(`Свой канал ${index + 1}: ожидается @username или ссылка t.me.`);
+        markInvalid(destinationInputs[index], true);
+        return;
+      }
+      const key = username.toLowerCase();
+      if (seenDest.has(key)) {
+        errors.push(`Свой канал ${index + 1} повторяется.`);
+        markInvalid(destinationInputs[index], true);
+      }
+      seenDest.add(key);
+    });
 
     const sourceValues = sourceInputs.map((input) => input.value.trim()).filter(Boolean);
     if (!sourceValues.length) errors.push("Добавьте хотя бы один канал-источник.");
@@ -417,17 +434,58 @@
     nodes.addSource.disabled = config.sources.length >= MAX_SOURCES;
   }
 
+  function renderDestinations() {
+    const list = Array.isArray(config.destinations) && config.destinations.length
+      ? config.destinations
+      : (config.destination ? [config.destination] : []);
+    config.destinations = [...list];
+    nodes.destinations.replaceChildren();
+    config.destinations.forEach((destination, index) => {
+      const row = document.createElement("div");
+      row.className = "source-row";
+      const input = document.createElement("input");
+      input.className = "text-input";
+      input.type = "text";
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.placeholder = "@мой_канал";
+      input.setAttribute("aria-label", `Свой канал ${index + 1}`);
+      input.value = destination;
+      input.addEventListener("input", () => { config.destinations[index] = input.value; });
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); nodes.save.click(); }
+      });
+      row.append(input);
+      if (config.destinations.length > 1) {
+        const remove = document.createElement("button");
+        remove.className = "button secondary remove-source";
+        remove.type = "button";
+        remove.textContent = "−";
+        remove.setAttribute("aria-label", `Удалить свой канал ${index + 1}`);
+        remove.addEventListener("click", () => { config.destinations.splice(index, 1); renderDestinations(); });
+        row.append(remove);
+      }
+      nodes.destinations.append(row);
+    });
+    nodes.destinationCounter.textContent = `${config.destinations.length} / ${MAX_SOURCES}`;
+    nodes.addDestination.disabled = config.destinations.length >= MAX_SOURCES;
+  }
+
   function readForm() {
     config.sources = [...nodes.sources.querySelectorAll("input")]
       .map((input) => input.value.trim())
       .filter(Boolean);
-    config.destination = nodes.destination.value.trim();
+    config.destinations = [...nodes.destinations.querySelectorAll("input")]
+      .map((input) => input.value.trim())
+      .filter(Boolean);
+    config.destination = config.destinations[0] || "";
     config.filter_enabled = nodes.filterEnabled.checked;
     config.filter_terms = nodes.filterTerms.value;
     config.filter_mode = nodes.filterMode.value;
     return {
       sources: config.sources,
       destination: config.destination,
+      destinations: config.destinations,
       filter_enabled: config.filter_enabled,
       filter_terms: config.filter_terms,
       filter_mode: config.filter_mode,
@@ -436,7 +494,7 @@
 
   function fillSettingsForm() {
     renderSources();
-    nodes.destination.value = config.destination || "";
+    renderDestinations();
     nodes.filterEnabled.checked = Boolean(config.filter_enabled);
     nodes.filterTerms.value = config.filter_terms || "";
     nodes.filterMode.value = config.filter_mode || "any";
@@ -526,7 +584,8 @@
       const state = document.createElement("span");
       state.className = "history-state";
       const icon = STATUS_ICONS[item.status] || "";
-      state.textContent = `${icon} ${STATUS_LABELS[item.status] || item.status} · @${item.source} · ${item.media_type}`.trim();
+      const route = item.destination ? ` → ${item.destination}` : "";
+      state.textContent = `${icon} ${STATUS_LABELS[item.status] || item.status} · @${item.source}${route} · ${item.media_type}`.trim();
       const time = document.createElement("time");
       time.className = "history-time";
       time.dateTime = item.created_at;
@@ -568,6 +627,10 @@
     nodes.botLine.textContent = status.bot ? `Бот: @${status.bot}` : "";
 
     const details = [];
+    const destinations = Array.isArray(status.destinations) && status.destinations.length
+      ? status.destinations
+      : (status.destination ? [status.destination] : []);
+    if (destinations.length) details.push(`Мои каналы: ${destinations.join(", ")}`);
     if (status.last_checked) {
       details.push(`Последняя проверка: ${new Date(status.last_checked * 1000).toLocaleTimeString("ru-RU")}`);
     }
@@ -1187,6 +1250,14 @@
       config.sources.push("");
       renderSources();
       nodes.sources.lastElementChild?.querySelector("input")?.focus();
+    }
+  });
+
+  nodes.addDestination.addEventListener("click", () => {
+    if (config.destinations.length < MAX_SOURCES) {
+      config.destinations.push("");
+      renderDestinations();
+      nodes.destinations.lastElementChild?.querySelector("input")?.focus();
     }
   });
 

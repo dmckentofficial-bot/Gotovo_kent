@@ -518,7 +518,7 @@ class WorkerTests(unittest.TestCase):
                  "getMe": {"ok": True, "id": 42, "username": "bot_name"},
                  "getChat": {"ok": True, "type": "private", "title": "", "username": ""},
              }.get(name, {})):
-            with self.assertRaisesRegex(RuntimeError, "настоящим Telegram-каналом"):
+            with self.assertRaisesRegex(RuntimeError, "настоящий Telegram-канал"):
                 worker.validate_configuration()
 
     def test_destination_channel_requires_admin(self):
@@ -598,6 +598,162 @@ class WorkerTests(unittest.TestCase):
 
         self.assertEqual(sent, [])
         self.assertEqual(cursors, {"source_one": 2})
+
+
+class MultiDestinationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.original_path = database.DATABASE_PATH
+        database.DATABASE_PATH = Path(self.tmp_dir.name) / "test.sqlite3"
+        database.initialize()
+
+    def tearDown(self):
+        database.DATABASE_PATH = self.original_path
+        self.tmp_dir.cleanup()
+
+    def test_config_migrates_single_destination_to_list(self):
+        database.set_config({
+            "sources": ["chanone"], "destination": "@oldest", "filter_enabled": False,
+            "filter_terms": "", "filter_mode": "any", "enabled": True,
+        })
+        config = database.get_config()
+        self.assertEqual(config["destinations"], ["@oldest"])
+        self.assertEqual(config["destination"], "@oldest")
+
+    def test_poll_fans_out_to_every_destination(self):
+        from app import worker
+
+        config = {
+            "sources": ["source_one"],
+            "destination": "@firstdest",
+            "destinations": ["@firstdest", "@seconddest"],
+            "filter_enabled": False,
+            "filter_terms": "",
+            "filter_mode": "any",
+            "enabled": True,
+        }
+        feeds = {"source_one": [{"id": "2", "text": "New post", "media": []}]}
+        sent = []
+        cursors = {"source_one": 1}
+
+        with patch.object(database, "get_config", return_value=config), \
+             patch.object(database, "get_cursor", side_effect=lambda source: cursors[source]), \
+             patch.object(database, "set_cursor", side_effect=lambda source, value: cursors.update({source: value})), \
+             patch.object(telegram, "fetch_public_posts", side_effect=lambda source: feeds[source]), \
+             patch.object(telegram, "publish_post", side_effect=lambda post, destination, signature="": sent.append(destination) or True), \
+             patch.object(telegram, "BOT_TOKEN", "123:test"):
+            worker.poll_once()
+
+        self.assertEqual(sent, ["@firstdest", "@seconddest"])
+        self.assertEqual(cursors, {"source_one": 2})
+        rows = database.recent_history()
+        self.assertEqual(
+            sorted(row["destination"] for row in rows),
+            ["@firstdest", "@seconddest"],
+        )
+
+    def test_history_records_destination(self):
+        database.write_history({"id": "9", "text": "hi", "media": []}, "src", "forwarded", "", "@mydest")
+        rows = database.recent_history()
+        self.assertEqual(rows[0]["destination"], "@mydest")
+
+    def test_put_config_accepts_destinations(self):
+        from app.main import ConfigPayload, put_config
+
+        result = put_config(ConfigPayload(
+            sources=["@somechannel"],
+            destinations=["https://t.me/firstdest", "@seconddest"],
+        ), _user=None)
+        config = result["config"]
+        self.assertEqual(config["destinations"], ["@firstdest", "@seconddest"])
+        self.assertEqual(config["destination"], "@firstdest")
+
+    def test_put_config_requires_at_least_one_destination(self):
+        from app.main import ConfigPayload, put_config
+
+        with self.assertRaises(HTTPException) as ctx:
+            put_config(ConfigPayload(sources=["@somechannel"], destinations=[]), _user=None)
+        self.assertEqual(ctx.exception.status_code, 422)
+
+
+class MyChannelsBotTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.original_path = database.DATABASE_PATH
+        database.DATABASE_PATH = Path(self.tmp_dir.name) / "test.sqlite3"
+        database.initialize()
+        database.set_config({
+            "sources": ["chanone"], "destination": "@oldest", "destinations": ["@oldest"],
+            "filter_enabled": False, "filter_terms": "", "filter_mode": "any", "enabled": True,
+        })
+        database.set_state("admin_telegram_id", "777")
+
+    def tearDown(self):
+        database.DATABASE_PATH = self.original_path
+        self.tmp_dir.cleanup()
+
+    def _updates(self, messages):
+        return [
+            {"update_id": 400 + index, "message": message}
+            for index, message in enumerate(messages)
+        ]
+
+    def _drain_texts(self, texts, bot_request):
+        from app import telegram, worker
+
+        messages = [
+            {"message_id": 80 + index, "text": text,
+             "chat": {"id": 777, "type": "private"}, "from": {"id": 777}}
+            for index, text in enumerate(texts)
+        ]
+
+        def fake_bot(method, data=None, files=None, timeout=30):
+            if method == "getUpdates":
+                return self._updates(messages)
+            return bot_request(method, data)
+
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "bot_request", side_effect=fake_bot):
+            worker.drain_direct_messages()
+
+    def test_my_button_lists_and_adds_channel(self):
+        from app import database
+
+        answers = []
+
+        def bot_request(method, data):
+            answers.append(data.get("text", ""))
+            return {"message_id": 1}
+
+        self._drain_texts(["\U0001F4E2 Мои каналы", "https://t.me/newmydest"], bot_request)
+        self.assertIn("@oldest", answers[0])
+        self.assertIn("@newmydest добавлен", answers[1])
+        config = database.get_config()
+        self.assertEqual(config["destinations"], ["@oldest", "@newmydest"])
+
+    def test_delm_removes_channel(self):
+        from app import database
+
+        answers = []
+
+        def bot_request(method, data):
+            answers.append(data.get("text", ""))
+            return {"message_id": 1}
+
+        self._drain_texts(["/delm @oldest"], bot_request)
+        self.assertIn("убран", answers[0])
+        self.assertEqual(database.get_config()["destinations"], [])
+
+    def test_dest_replaces_whole_list(self):
+        from app import database
+
+        def bot_request(method, data):
+            return {"message_id": 1}
+
+        self._drain_texts(["/dest @onlyone"], bot_request)
+        config = database.get_config()
+        self.assertEqual(config["destinations"], ["@onlyone"])
+        self.assertEqual(config["destination"], "@onlyone")
 
 
 class MenuButtonTests(unittest.TestCase):
@@ -1110,7 +1266,7 @@ class BotCommandsTests(unittest.TestCase):
 
         self._drain_texts(["➕ Добавить", "/list"], bot_request)
         self.assertIn("Пришлите", answers[0])
-        self.assertIn("Источники", answers[1])
+        self.assertIn("Копируемые каналы", answers[1])
         self.assertNotIn("newchanname", database.get_config()["sources"])
 
     def test_every_answer_carries_main_keyboard(self):

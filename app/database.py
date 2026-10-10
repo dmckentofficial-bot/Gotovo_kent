@@ -9,6 +9,7 @@ DATABASE_PATH = Path(os.environ.get("DATABASE_PATH", "data/app.sqlite3"))
 DEFAULT_CONFIG = {
     "sources": [],
     "destination": "",
+    "destinations": [],
     "filter_enabled": False,
     "filter_terms": "",
     "filter_mode": "any",
@@ -16,6 +17,7 @@ DEFAULT_CONFIG = {
     "signature_text": "",
     "enabled": False,
 }
+MAX_DESTINATIONS = 5
 
 
 def connect():
@@ -54,8 +56,12 @@ def initialize():
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
-            """
+            """,
         )
+        # Миграция: колонка назначения в истории (для нескольких своих каналов).
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(history)").fetchall()]
+        if "destination" not in columns:
+            connection.execute("ALTER TABLE history ADD COLUMN destination TEXT NOT NULL DEFAULT ''")
         connection.execute(
             "INSERT OR IGNORE INTO config (id, value) VALUES (1, ?)",
             (json.dumps(DEFAULT_CONFIG, ensure_ascii=False),),
@@ -66,7 +72,17 @@ def initialize():
 def get_config():
     with connect() as connection:
         row = connection.execute("SELECT value FROM config WHERE id = 1").fetchone()
-    return {**DEFAULT_CONFIG, **json.loads(row["value"])} if row else DEFAULT_CONFIG.copy()
+    config = {**DEFAULT_CONFIG, **json.loads(row["value"])} if row else DEFAULT_CONFIG.copy()
+    if not isinstance(config.get("sources"), list):
+        config["sources"] = []
+    if not isinstance(config.get("destinations"), list):
+        config["destinations"] = []
+    # Миграция со старого одиночного назначения.
+    if not config["destinations"] and config.get("destination"):
+        config["destinations"] = [config["destination"]]
+    if not config.get("destination") and config["destinations"]:
+        config["destination"] = config["destinations"][0]
+    return config
 
 
 def set_config(config):
@@ -93,22 +109,26 @@ def set_cursor(source, message_id):
         )
 
 
-def already_forwarded(source, message_id):
+def already_forwarded(source, message_id, destination=""):
+    query = (
+        "SELECT 1 FROM history WHERE source = ? AND message_id = ? AND status = 'forwarded' LIMIT 1"
+        if not destination
+        else "SELECT 1 FROM history WHERE source = ? AND message_id = ? AND status = 'forwarded' "
+             "AND (destination = ? OR destination = '') LIMIT 1"
+    )
+    params = (source, str(message_id)) if not destination else (source, str(message_id), destination)
     with connect() as connection:
-        row = connection.execute(
-            "SELECT 1 FROM history WHERE source = ? AND message_id = ? AND status = 'forwarded' LIMIT 1",
-            (source, str(message_id)),
-        ).fetchone()
+        row = connection.execute(query, params).fetchone()
     return row is not None
 
 
-def write_history(post, source, status, details=""):
+def write_history(post, source, status, details="", destination=""):
     media = post.get("media", [])
     media_type = ", ".join(dict.fromkeys(item.get("type", "media") for item in media)) or "text"
     with connect() as connection:
         connection.execute(
-            "INSERT INTO history (created_at, source, message_id, status, media_type, message, details) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO history (created_at, source, message_id, status, media_type, message, details, destination) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 source,
@@ -117,6 +137,7 @@ def write_history(post, source, status, details=""):
                 media_type,
                 post.get("text", "")[:500],
                 details[:1000],
+                str(destination or "")[:100],
             ),
         )
 
@@ -124,7 +145,7 @@ def write_history(post, source, status, details=""):
 def recent_history(limit=50):
     with connect() as connection:
         rows = connection.execute(
-            "SELECT created_at, source, message_id, status, media_type, message, details "
+            "SELECT created_at, source, message_id, status, media_type, message, details, destination "
             "FROM history ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()

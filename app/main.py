@@ -30,6 +30,7 @@ worker_thread = None
 class ConfigPayload(BaseModel):
     sources: list[str] = Field(default_factory=list, max_length=5)
     destination: str = Field(default="", max_length=100)
+    destinations: list[str] = Field(default_factory=list, max_length=5)
     filter_enabled: bool = False
     filter_terms: str = Field(default="", max_length=2000)
     filter_mode: Literal["any", "all"] = "any"
@@ -365,12 +366,23 @@ def get_config(_user=Depends(require_admin)):
 
 @app.put("/api/config")
 def put_config(payload: ConfigPayload, _user=Depends(require_admin)):
-    if not payload.destination.strip():
-        raise HTTPException(status_code=422, detail="Укажите канал назначения.")
-    try:
-        destination = telegram.normalize_destination(payload.destination)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    raw_destinations = [value for value in payload.destinations if value.strip()]
+    if not raw_destinations and payload.destination.strip():
+        raw_destinations = [payload.destination]
+    if not raw_destinations:
+        raise HTTPException(status_code=422, detail="Укажите хотя бы один свой канал.")
+    normalized_destinations = []
+    for destination in raw_destinations:
+        try:
+            value = telegram.normalize_destination(destination)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if value.casefold() not in {item.casefold() for item in normalized_destinations}:
+            normalized_destinations.append(value)
+    if len(normalized_destinations) > database.MAX_DESTINATIONS:
+        raise HTTPException(
+            status_code=422, detail=f"Больше {database.MAX_DESTINATIONS} своих каналов нельзя."
+        )
     normalized_sources = []
     for source in payload.sources:
         if not source.strip():
@@ -389,7 +401,8 @@ def put_config(payload: ConfigPayload, _user=Depends(require_admin)):
     config = {
         **database.get_config(),
         "sources": normalized_sources,
-        "destination": destination,
+        "destination": normalized_destinations[0],
+        "destinations": normalized_destinations,
         "filter_enabled": payload.filter_enabled,
         "filter_terms": payload.filter_terms.strip(),
         "filter_mode": payload.filter_mode,
@@ -410,15 +423,21 @@ def test_connection(_user=Depends(require_admin)):
 def status(_user=Depends(require_admin)):
     config = database.get_config()
     last_checked = database.get_state("last_checked")
-    try:
-        destination = telegram.normalize_destination(config["destination"]) if config["destination"] else ""
-    except ValueError:
-        destination = config["destination"]
+    destinations = list(config.get("destinations") or [])
+    if not destinations and config.get("destination"):
+        destinations = [config["destination"]]
+    display = []
+    for destination in destinations:
+        try:
+            display.append(telegram.normalize_destination(destination))
+        except ValueError:
+            display.append(destination)
     return {
-        "running": bool(config.get("enabled") and telegram.BOT_TOKEN and config["sources"] and config["destination"]),
+        "running": bool(config.get("enabled") and telegram.BOT_TOKEN and config["sources"] and display),
         "bot": database.get_state("bot_username"),
         "sources": config["sources"],
-        "destination": destination,
+        "destination": display[0] if display else "",
+        "destinations": display,
         "last_checked": int(last_checked) if last_checked.isdigit() else None,
         "last_error": database.get_state("last_error"),
         "menu_error": database.get_state("menu_error"),

@@ -19,16 +19,18 @@ HELP_TEXT = (
     "Просто перешлите мне любой пост из любого канала.\n\n"
     "Кнопки меню делают то же, что вкладки приложения:\n"
     "▶️/⏹ — запустить/остановить, 📊 — статус, 📈 — статистика,\n"
-    "📋 — каналы, ➕/➖ — добавить/убрать источник, 🎯 — назначение,\n"
-    "✅ — проверка, ❓ — помощь.\n\n"
+    "📋 — копируемые каналы, 📢 — свои каналы, ➕/➖ — добавить/убрать источник,\n"
+    "🎯 — назначение, ✅ — проверка, ❓ — помощь.\n\n"
     "Команды:\n"
     "/status — состояние пересылки\n"
     "/stats — счётчики\n"
     "/on и /off — включить/выключить\n"
-    "/list — источники и назначение\n"
+    "/list — копируемые каналы и свои\n"
     "/add канал — добавить источник\n"
     "/del канал — убрать источник\n"
-    "/dest канал — сменить назначение\n"
+    "/dest канал — заменить свои каналы одним\n"
+    "/mydest канал — добавить свой канал\n"
+    "/delm канал — убрать свой канал\n"
     "/test — проверить подключение\n"
     "/id — ваш Telegram ID"
 )
@@ -40,7 +42,8 @@ BTN_RUN = "▶️ Запустить"
 BTN_STOP = "⏹ Остановить"
 BTN_STATUS = "📊 Статус"
 BTN_STATS = "📈 Статистика"
-BTN_LIST = "📋 Каналы"
+BTN_LIST = "📋 Каналы (Cop)"
+BTN_MY = "📢 Мои каналы"
 BTN_ADD = "➕ Добавить"
 BTN_DEL = "➖ Убрать"
 BTN_DEST = "🎯 Назначение"
@@ -89,9 +92,9 @@ def _main_keyboard():
     rows = [
         [{"text": toggle}, {"text": BTN_STATUS}],
         [{"text": BTN_STATS}, {"text": BTN_TEST}],
-        [{"text": BTN_LIST}, {"text": BTN_ADD}],
-        [{"text": BTN_DEL}, {"text": BTN_DEST}],
-        [{"text": BTN_HELP}],
+        [{"text": BTN_LIST}, {"text": BTN_MY}],
+        [{"text": BTN_ADD}, {"text": BTN_DEL}],
+        [{"text": BTN_DEST}, {"text": BTN_HELP}],
     ]
     url = _app_url()
     if url:
@@ -143,6 +146,7 @@ PENDING_ASK = {
     "add": "Пришлите @канал или ссылку t.me — добавлю в источники.",
     "del": "Пришлите @канал или номер из списка — уберу из источников.",
     "dest": "Пришлите @канал или ссылку t.me — станет назначением.",
+    "mydest": "Пришлите @канал или ссылку t.me — добавлю в свои каналы.",
 }
 
 
@@ -153,7 +157,22 @@ def _consume_pending(action, argument):
         return _cmd_delete(argument)
     if action == "dest":
         return _cmd_destination(argument)
+    if action == "mydest":
+        return _cmd_my_destination(argument)
     return ""
+
+
+def _my_channels_text():
+    config = database.get_config()
+    destinations = list(config.get("destinations") or [])
+    if not destinations and config.get("destination"):
+        destinations = [config["destination"]]
+    if not destinations:
+        return "Мои каналы: пока пусто. Пришлите @канал или ссылку t.me — добавлю."
+    lines = ["Мои каналы (сюда копируется всё):"]
+    lines.extend(f"{index}. {name}" for index, name in enumerate(destinations, 1))
+    lines.append("Пришлите ещё @канал, чтобы добавить. Убрать: /delm @канал.")
+    return "\n".join(lines)
 
 
 def _save_sources(sources):
@@ -192,8 +211,8 @@ def _cmd_stats():
 
 def _cmd_set_enabled(enabled):
     config = database.get_config()
-    if enabled and (not config.get("sources") or not config.get("destination")):
-        return "Сначала задайте источники и канал назначения: /add, /dest."
+    if enabled and (not config.get("sources") or not (config.get("destinations") or config.get("destination"))):
+        return "Сначала задайте источники и хотя бы один свой канал: /add, /mydest."
     config["enabled"] = enabled
     database.set_config(config)
     return "Пересылка включена." if enabled else "Пересылка остановлена."
@@ -202,11 +221,17 @@ def _cmd_set_enabled(enabled):
 def _cmd_list():
     config = database.get_config()
     sources = config.get("sources") or []
-    lines = ["Источники:"]
+    destinations = list(config.get("destinations") or [])
+    if not destinations and config.get("destination"):
+        destinations = [config["destination"]]
+    lines = ["Копируемые каналы (Cop):"]
     lines.extend(f"{index}. @{name}" for index, name in enumerate(sources, 1))
     if not sources:
         lines.append("— пусто —")
-    lines.append(f"Назначение: {config.get('destination') or 'не задано'}.")
+    lines.append("Мои каналы (куда копировать):")
+    lines.extend(f"{index}. {name}" for index, name in enumerate(destinations, 1))
+    if not destinations:
+        lines.append("— пусто —")
     return "\n".join(lines)
 
 
@@ -265,8 +290,62 @@ def _cmd_destination(argument):
         return str(exc)
     config = database.get_config()
     config["destination"] = destination
+    config["destinations"] = [destination]
     database.set_config(config)
-    return f"Канал назначения: {destination}."
+    return f"Свои каналы заменены одним: {destination}."
+
+
+def _cmd_my_destination(argument):
+    if not argument:
+        return "Использование: /mydest @канал или ссылку t.me."
+    try:
+        destination = telegram.normalize_destination(argument)
+    except ValueError as exc:
+        return str(exc)
+    config = database.get_config()
+    destinations = list(config.get("destinations") or [])
+    if not destinations and config.get("destination"):
+        destinations = [config["destination"]]
+    if destination.casefold() in {value.casefold() for value in destinations}:
+        return f"{destination} уже в списке."
+    if len(destinations) >= database.MAX_DESTINATIONS:
+        return f"Больше {database.MAX_DESTINATIONS} своих каналов нельзя."
+    destinations.append(destination)
+    config["destination"] = destinations[0]
+    config["destinations"] = destinations
+    database.set_config(config)
+    return f"{destination} добавлен. Всего: {len(destinations)}."
+
+
+def _cmd_delete_destination(argument):
+    if not argument:
+        return "Использование: /delm @канал или номер из /list."
+    config = database.get_config()
+    destinations = list(config.get("destinations") or [])
+    if not destinations and config.get("destination"):
+        destinations = [config["destination"]]
+    target = argument.strip()
+    if target.isdigit():
+        index = int(target) - 1
+        if 0 <= index < len(destinations):
+            removed = destinations.pop(index)
+            config["destination"] = destinations[0] if destinations else ""
+            config["destinations"] = destinations
+            database.set_config(config)
+            return f"{removed} убран."
+        return "Нет своего канала с таким номером."
+    try:
+        username = telegram.normalize_destination(target)
+    except ValueError as exc:
+        return str(exc)
+    for value in destinations:
+        if value.casefold() == username.casefold():
+            destinations.remove(value)
+            config["destination"] = destinations[0] if destinations else ""
+            config["destinations"] = destinations
+            database.set_config(config)
+            return f"{username} убран."
+    return f"{username} нет в списке."
 
 
 def _cmd_test():
@@ -295,6 +374,8 @@ def _handle_owner_command(text):
         "/add": lambda: _cmd_add(argument),
         "/del": lambda: _cmd_delete(argument),
         "/dest": lambda: _cmd_destination(argument),
+        "/mydest": lambda: _cmd_my_destination(argument),
+        "/delm": lambda: _cmd_delete_destination(argument),
         "/test": _cmd_test,
     }
     handler = handlers.get(command)
@@ -323,11 +404,20 @@ def drain_direct_messages():
     if not telegram.get_bot_token():
         return
     config = database.get_config()
-    if not config.get("destination"):
+    raw_destinations = list(config.get("destinations") or [])
+    if not raw_destinations and config.get("destination"):
+        raw_destinations = [config["destination"]]
+    if not raw_destinations:
         return
-    try:
-        destination = telegram.normalize_destination(config["destination"])
-    except ValueError:
+    destinations = []
+    for destination in raw_destinations:
+        try:
+            normalized = telegram.normalize_destination(destination)
+        except ValueError:
+            continue
+        if normalized.casefold() not in {value.casefold() for value in destinations}:
+            destinations.append(normalized)
+    if not destinations:
         return
     owner_id = _owner_id()
 
@@ -351,13 +441,13 @@ def drain_direct_messages():
             continue
         database.set_state("bot_updates_offset", update_id + 1)
         try:
-            _handle_private_update(update, owner_id, destination)
+            _handle_private_update(update, owner_id, destinations)
         except Exception as exc:
             # Одно битое обновление не должно ронять весь приёмник.
             database.set_state("bot_answer_error", f"update {update_id}: {type(exc).__name__}: {exc}"[:300])
 
 
-def _handle_private_update(update, owner_id, destination):
+def _handle_private_update(update, owner_id, destinations):
     message = update.get("message") or {}
     chat = message.get("chat") or {}
     sender = message.get("from") or {}
@@ -373,7 +463,8 @@ def _handle_private_update(update, owner_id, destination):
         return
     if owner_id is not None and sender.get("id") != owner_id:
         return
-    if text in (BTN_RUN, BTN_STOP, BTN_STATUS, BTN_STATS, BTN_LIST, BTN_TEST, BTN_HELP, BTN_ADD, BTN_DEL, BTN_DEST):
+    if text in (BTN_RUN, BTN_STOP, BTN_STATUS, BTN_STATS, BTN_LIST, BTN_MY,
+                BTN_TEST, BTN_HELP, BTN_ADD, BTN_DEL, BTN_DEST):
         _clear_pending()
         if text == BTN_RUN:
             _answer_private(chat.get("id"), _cmd_set_enabled(True), keyboard="main")
@@ -385,12 +476,15 @@ def _handle_private_update(update, owner_id, destination):
             _answer_private(chat.get("id"), _cmd_stats(), keyboard="main")
         elif text == BTN_LIST:
             _answer_private(chat.get("id"), _cmd_list(), keyboard="main")
+        elif text == BTN_MY:
+            _answer_private(chat.get("id"), _my_channels_text(), keyboard="main")
+            _set_pending(chat.get("id"), "mydest")
         elif text == BTN_TEST:
             _answer_private(chat.get("id"), _cmd_test(), keyboard="main")
         elif text == BTN_HELP:
             _answer_private(chat.get("id"), HELP_TEXT, keyboard="main")
         else:
-            action = {"➕ Добавить": "add", "➖ Убрать": "del"}.get(text, "dest")
+            action = {BTN_ADD: "add", BTN_DEL: "del"}.get(text, "dest")
             _set_pending(chat.get("id"), action)
             _answer_private(chat.get("id"), PENDING_ASK[action], keyboard="main")
         return
@@ -409,23 +503,24 @@ def _handle_private_update(update, owner_id, destination):
         "text": text or message.get("caption", ""),
         "media": [{"type": kind} for kind in _direct_media_label(message)],
     }
-    try:
-        telegram.bot_request(
-            "copyMessage",
-            {"chat_id": destination, "from_chat_id": chat.get("id"), "message_id": message_id},
-            timeout=30,
-        )
-        database.write_history(preview, DIRECT_SOURCE, "forwarded")
-    except RuntimeError:
+    for destination in destinations:
         try:
             telegram.bot_request(
-                "forwardMessage",
+                "copyMessage",
                 {"chat_id": destination, "from_chat_id": chat.get("id"), "message_id": message_id},
                 timeout=30,
             )
-            database.write_history(preview, DIRECT_SOURCE, "forwarded", "Скопировать не вышло — переслано с меткой.")
-        except RuntimeError as exc:
-            database.write_history(preview, DIRECT_SOURCE, "error", str(exc))
+            database.write_history(preview, DIRECT_SOURCE, "forwarded", "", destination)
+        except RuntimeError:
+            try:
+                telegram.bot_request(
+                    "forwardMessage",
+                    {"chat_id": destination, "from_chat_id": chat.get("id"), "message_id": message_id},
+                    timeout=30,
+                )
+                database.write_history(preview, DIRECT_SOURCE, "forwarded", "Скопировать не вышло — переслано с меткой.", destination)
+            except RuntimeError as exc:
+                database.write_history(preview, DIRECT_SOURCE, "error", str(exc), destination)
 
 
 def run(stop_event):
@@ -470,17 +565,28 @@ def poll_once():
     if not config.get("enabled"):
         database.set_state("last_checked", int(time.time()))
         return
-    if not config["sources"] or not config["destination"]:
+    if not config["sources"] or not (config.get("destinations") or config.get("destination")):
         database.set_state("last_error", "")
         database.set_state("last_checked", int(time.time()))
         return
 
     signature = config.get("signature_text", "").strip() if config.get("signature_enabled") else ""
 
-    try:
-        destination = telegram.normalize_destination(config["destination"])
-    except ValueError as exc:
-        database.set_state("last_error", f"Канал назначения: {exc}")
+    destinations = list(config.get("destinations") or [])
+    if not destinations and config.get("destination"):
+        destinations = [config["destination"]]
+    normalized_destinations = []
+    for destination in destinations:
+        try:
+            normalized = telegram.normalize_destination(destination)
+        except ValueError as exc:
+            database.set_state("last_error", f"Канал назначения {destination}: {exc}")
+            return
+        if normalized.casefold() not in {value.casefold() for value in normalized_destinations}:
+            normalized_destinations.append(normalized)
+    if not normalized_destinations:
+        database.set_state("last_error", "")
+        database.set_state("last_checked", int(time.time()))
         return
 
     use_exact = False
@@ -560,11 +666,27 @@ def poll_once():
                 try:
                     # Добавляем source_username для copyMessage
                     post["source_username"] = source
-                    if telegram.publish_post(post, destination, signature):
-                        database.write_history(post, source, "forwarded")
-                    else:
-                        database.write_history(post, source, "skipped", "Пустой пост без поддерживаемого медиа.")
+                    errors = []
+                    delivered = False
+                    for destination in normalized_destinations:
+                        if database.already_forwarded(source, post.get("id", ""), destination):
+                            delivered = True
+                            continue
+                        try:
+                            if telegram.publish_post(post, destination, signature):
+                                database.write_history(post, source, "forwarded", "", destination)
+                            else:
+                                database.write_history(
+                                    post, source, "skipped", "Пустой пост без поддерживаемого медиа.", destination
+                                )
+                            delivered = True
+                        except (RuntimeError, ValueError) as exc:
+                            database.write_history(post, source, "error", str(exc), destination)
+                            errors.append(f"{destination}: {exc}")
                     database.set_cursor(source, post_id)
+                    if not delivered and errors:
+                        database.set_state("last_error", f"@{source}, пост {post_id}: {'; '.join(errors)}")
+                        break
                 except (RuntimeError, ValueError) as exc:
                     database.write_history(post, source, "error", str(exc))
                     database.set_state("last_error", f"@{source}, пост {post_id}: {exc}")
@@ -585,38 +707,49 @@ def validate_configuration():
         raise RuntimeError("На сервере не задан TELEGRAM_BOT_TOKEN.")
     if not config["sources"]:
         raise ValueError("Добавьте хотя бы один канал-источник.")
-    if not config["destination"]:
-        raise ValueError("Укажите канал назначения.")
+    destinations = list(config.get("destinations") or [])
+    if not destinations and config.get("destination"):
+        destinations = [config["destination"]]
+    if not destinations:
+        raise ValueError("Укажите хотя бы один свой канал.")
     if config["filter_enabled"] and not config["filter_terms"].strip():
         raise ValueError("Укажите слова или хэштеги для фильтра.")
 
-    try:
-        destination = telegram.normalize_destination(config["destination"])
-    except ValueError as exc:
-        raise ValueError(f"Канал назначения: {exc}") from exc
+    normalized = []
+    for destination in destinations:
+        try:
+            value = telegram.normalize_destination(destination)
+        except ValueError as exc:
+            raise ValueError(f"Канал назначения {destination}: {exc}") from exc
+        if value.casefold() not in {item.casefold() for item in normalized}:
+            normalized.append(value)
 
     results = []
     for source in config["sources"]:
         posts = telegram.fetch_public_posts(source)
         results.append({"source": source, "available": True, "posts": len(posts)})
     bot = telegram.bot_request("getMe")
-    chat = telegram.bot_request("getChat", {"chat_id": destination})
-    if chat.get("type") != "channel":
-        raise RuntimeError(
-            "Канал назначения должен быть настоящим Telegram-каналом. "
-            "Укажите @username канала, а не личную переписку."
+    checked = []
+    for destination in normalized:
+        chat = telegram.bot_request("getChat", {"chat_id": destination})
+        if chat.get("type") != "channel":
+            raise RuntimeError(
+                f"{destination}: нужен настоящий Telegram-канал. "
+                "Укажите @username канала, а не личную переписку."
+            )
+        member = telegram.bot_request(
+            "getChatMember", {"chat_id": destination, "user_id": bot["id"]}
         )
-    member = telegram.bot_request(
-        "getChatMember", {"chat_id": destination, "user_id": bot["id"]}
-    )
-    if member.get("status") not in {"administrator", "creator"}:
-        raise RuntimeError("Добавьте бота администратором в канал назначения.")
-    if member.get("can_post_messages") is False:
-        raise RuntimeError("Боту не дано право публиковать сообщения в канале назначения.")
+        if member.get("status") not in {"administrator", "creator"}:
+            raise RuntimeError(f"{destination}: добавьте бота администратором.")
+        if member.get("can_post_messages") is False:
+            raise RuntimeError(f"{destination}: дайте боту право публиковать сообщения.")
+        checked.append(chat.get("title") or chat.get("username") or destination)
     return {
         "sources": results,
         "bot": bot.get("username", ""),
-        "destination": chat.get("title") or chat.get("username") or destination,
+        "destination": ", ".join(checked),
+        "destinations": checked,
     }
 
 

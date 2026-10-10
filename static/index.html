@@ -134,11 +134,16 @@
         </div>
 
         <div class="card">
-          <p class="eyebrow">ПОЛУЧАТЕЛЬ</p>
-          <h2 class="section-title">Канал назначения</h2>
-          <label class="field-label" for="destination">Username или ссылка t.me</label>
-          <input id="destination" class="text-input" type="text" placeholder="@мой_канал" autocomplete="off" spellcheck="false">
-          <p class="hint">Добавьте бота в канал администратором с правом публикации.</p>
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">ПОЛУЧАТЕЛЬ</p>
+              <h2 class="section-title">Мои каналы</h2>
+            </div>
+            <span id="destination-counter" class="counter">0 / 5</span>
+          </div>
+          <p class="hint">Ваши каналы, куда копируется всё. Добавьте бота в каждый администратором с правом публикации.</p>
+          <div id="destinations" class="sources"></div>
+          <button id="add-destination" class="button secondary" type="button">＋ Добавить свой канал</button>
         </div>
 
         <div class="card">
