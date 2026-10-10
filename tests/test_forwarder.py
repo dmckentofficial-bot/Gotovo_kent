@@ -1759,6 +1759,54 @@ class BotCommandsTests(unittest.TestCase):
 
         self.assertTrue(any(method == "sendMessage" and "перешлите" in text for method, text in sent))
 
+    def test_member_line_shows_role_name_and_handle(self):
+        line = worker._member_line({
+            "status": "administrator",
+            "user": {"first_name": "Иван", "last_name": "Петров", "username": "ivan_p", "id": 5},
+        })
+        self.assertIn("Иван Петров", line)
+        self.assertIn("@ivan_p", line)
+        self.assertTrue(line.startswith(worker.STATUS_MARKS["administrator"]))
+
+    def test_members_list_is_owner_only(self):
+        answer = worker._cmd_members("@chat", user_key=None)
+        self.assertEqual(answer, "Раздел только для владельца.")
+
+    def test_members_command_sends_chat_reference_to_api(self):
+        owner_key = "u1"
+        members = [
+            {"status": "creator", "user": {"first_name": "A", "username": "a", "id": 1}},
+            {"status": "member", "user": {"first_name": "B", "username": "b", "id": 2}},
+        ]
+        calls = []
+
+        def fake_bot(method, data=None, files=None, timeout=30):
+            calls.append((method, data or {}))
+            return members
+
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "bot_request", side_effect=fake_bot), \
+             patch.object(database, "set_state"), \
+             patch.object(worker, "_owner_guard", return_value=""), \
+             patch.object(worker, "_is_owner_key", return_value=True):
+            text = worker._cmd_members("@my_chat", owner_key)
+
+        self.assertEqual(calls[0][0], "getChatMembers")
+        self.assertEqual(calls[0][1]["chat_id"], "@my_chat")
+        self.assertEqual(calls[0][1]["limit"], worker.MEMBERS_PAGE_SIZE)
+        self.assertIn("@a", text)
+        self.assertIn("@b", text)
+
+    def test_members_button_is_only_in_owner_keyboard(self):
+        with patch.object(database, "get_config", return_value={"enabled": True, "sources": []}), \
+             patch.object(worker, "_is_owner_key", side_effect=lambda key: key == "owner"):
+            owner_markup = worker._main_keyboard(user_key="owner")
+            user_markup = worker._main_keyboard(user_key="someone_else")
+        owner_labels = [b["text"] for row in owner_markup["keyboard"] for b in row]
+        user_labels = [b["text"] for row in user_markup["keyboard"] for b in row]
+        self.assertIn(worker.BTN_MEMBERS, owner_labels)
+        self.assertNotIn(worker.BTN_MEMBERS, user_labels)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -32,6 +32,7 @@ HELP_TEXT = (
     "/sig текст — включить подпись\n"
     "/sigoff — выключить подпись\n"
     "/users — пользователи (владелец)\n"
+    "/members чат — участники чата, постранично (владелец)\n"
     "/invite — выдать доступ (владелец)\n"
     "/ban, /unban — блокировка (владелец)\n"
     "/list — копируемые каналы и свои\n"
@@ -45,6 +46,8 @@ HELP_TEXT = (
 )
 
 MAX_SOURCES = 5
+MEMBERS_PAGE_SIZE = 50
+MEMBERS_PAGE_TIMEOUT = 30
 
 # Кнопки меню (текст кнопок приходит обычным сообщением).
 BTN_RUN = "▶️ Запустить"
@@ -57,6 +60,7 @@ BTN_ADD = "➕ Добавить"
 BTN_DEL = "➖ Убрать"
 BTN_TEST = "✅ Проверка"
 BTN_USERS = "👥 Пользователи"
+BTN_MEMBERS = "🧑 Участники"
 BTN_INVITE = "🔗 Приглашение"
 BTN_HELP = "❓ Помощь"
 
@@ -97,7 +101,8 @@ def _main_keyboard(user_key=None):
         [{"text": BTN_HELP}],
     ]
     if _is_owner_key(user_key):
-        rows.append([{"text": BTN_USERS}, {"text": BTN_INVITE}])
+        rows.append([{"text": BTN_USERS}, {"text": BTN_MEMBERS}])
+        rows.append([{"text": BTN_INVITE}])
     return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
 
 
@@ -427,6 +432,7 @@ def _handle_owner_command(text, user_key=None):
         "/mydest": lambda: _cmd_my_destination(argument, user_key),
         "/delm": lambda: _cmd_delete_destination(argument, user_key),
         "/users": lambda: _cmd_users(user_key),
+        "/members": lambda: _cmd_members(argument, user_key),
         "/invite": lambda: _cmd_invite(user_key),
         "/ban": lambda: _cmd_ban(argument, user_key),
         "/unban": lambda: _cmd_unban(argument, user_key),
@@ -448,6 +454,90 @@ def _cmd_users(user_key=None):
     if denied:
         return denied
     text, _ = _admin_users_message()
+    return text
+
+
+STATUS_MARKS = {
+    "creator": "👑",
+    "administrator": "🛡",
+    "member": "✅",
+    "restricted": "⛔",
+    "left": "↩️",
+    "kicked": "🚫",
+}
+
+
+def _member_line(entry):
+    """Строка участника: роль, имя и @username/ID."""
+    user = entry.get("user") or {}
+    mark = STATUS_MARKS.get(entry.get("status", ""), "•")
+    name = " ".join(part for part in (user.get("first_name"), user.get("last_name")) if part) or "без имени"
+    handle = f"@{user['username']}" if user.get("username") else f"ID {user.get('id', '?')}"
+    return f"{mark} {name} — {handle}"
+
+
+def _members_message(chat, offset, user_key=None):
+    """Текст + клавиатура пагинации участников чата (только владелец)."""
+    denied = _owner_guard(user_key)
+    if denied:
+        return denied, None
+    try:
+        offset = max(int(offset or 0), 0)
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        members = telegram.bot_request(
+            "getChatMembers",
+            {"chat_id": chat, "limit": MEMBERS_PAGE_SIZE, "offset": offset},
+            timeout=MEMBERS_PAGE_TIMEOUT,
+        )
+    except RuntimeError as exc:
+        # Чаще всего бот не администратор чата — объясняем это прямо.
+        return f"Не получилось получить участников: {str(exc)[:160]}", None
+    if not isinstance(members, list) or not members:
+        return "Участники не найдены. Проверьте, что бот — администратор чата.", None
+
+    title = members[0].get("user", {}).get("username") or chat
+    lines = [f"Участники «{title}» — с {offset}:", ""]
+    lines.extend(_member_line(entry) for entry in members)
+
+    keyboard = []
+    nav = []
+    if offset > 0:
+        nav.append({"text": "⬅️ Назад", "callback_data": f"adm:m:{offset - MEMBERS_PAGE_SIZE}"})
+    nav.append({"text": f"Ещё {offset + len(members)} ➡️", "callback_data": f"adm:m:{offset + MEMBERS_PAGE_SIZE}"})
+    keyboard.append(nav)
+    return "\n".join(lines), {"inline_keyboard": keyboard}
+
+
+def _members_chat():
+    return database.get_state("members_chat", "").strip()
+
+
+def _cmd_members(argument, user_key=None):
+    """Команда /members: показать участников чата постранично."""
+    denied = _owner_guard(user_key)
+    if denied:
+        return denied
+    chat = (argument or "").strip()
+    if not chat:
+        chat = _members_chat()
+        if not chat:
+            return "Использование: /members @username или /members -1001234567890."
+    database.set_state("members_chat", chat)
+    text, _ = _members_message(chat, 0, user_key)
+    return text
+
+
+def _members_from_keyboard(user_key=None):
+    """Ответ на кнопку «Участники»: последний чат или подсказка с синтаксисом."""
+    denied = _owner_guard(user_key)
+    if denied:
+        return denied
+    chat = _members_chat()
+    if not chat:
+        return "Укажите чат командой /members @username или /members -1001234567890."
+    text, _ = _members_message(chat, 0, user_key)
     return text
 
 
@@ -611,6 +701,12 @@ def _handle_admin_callback(query):
             else:
                 database.set_limits(user["user_id"], max_destinations=max_destinations + step)
             text, markup = _admin_users_message()
+        elif action == "m" and len(parts) == 3:
+            chat = _members_chat()
+            if not chat:
+                raise ValueError("Сначала укажите чат: /members @username.")
+            # Владельца уже проверили выше — передаём его ключ, иначе guard заблокирует.
+            text, markup = _members_message(chat, parts[2], database.user_key_for(owner_id))
         elif action == "r" and len(parts) == 3:
             database.revoke_invite(parts[2])
             text, markup = _admin_invites_message()
@@ -743,8 +839,12 @@ def _handle_private_update(update, owner_id):
         return
     destinations = _destinations_of(user_key)
     if text in (BTN_RUN, BTN_STOP, BTN_SIGN, BTN_STATS, BTN_LIST, BTN_MY,
-                BTN_TEST, BTN_HELP, BTN_ADD, BTN_DEL, BTN_USERS, BTN_INVITE):
+                BTN_TEST, BTN_HELP, BTN_ADD, BTN_DEL, BTN_USERS, BTN_INVITE,
+                BTN_MEMBERS):
         _clear_pending()
+        if text == BTN_MEMBERS:
+            _answer_private(chat.get("id"), _members_from_keyboard(user_key), keyboard="main", user_key=user_key)
+            return
         if text in (BTN_USERS, BTN_INVITE):
             if not _is_owner_key(user_key):
                 _answer_private(chat.get("id"), "Раздел только для владельца.", keyboard="main", user_key=user_key)
