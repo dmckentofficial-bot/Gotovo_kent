@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -303,6 +304,12 @@ def mt_qr_status(_user=Depends(require_admin)):
 def put_bot(payload: BotPayload, _user=Depends(require_admin)):
     new_token = payload.token.strip()
     new_admin = payload.admin_id.strip()
+
+    if new_token and not re.fullmatch(r"\d+:[\w-]{30,}", new_token):
+        raise HTTPException(
+            status_code=422,
+            detail="Токен похож на неверный: обычно это цифры, двоеточие и длинный код от @BotFather.",
+        )
 
     if new_token:
         # Сначала проверяем токен через getMe — применяем только рабочий.

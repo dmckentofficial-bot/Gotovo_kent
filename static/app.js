@@ -251,15 +251,29 @@
 
   async function api(path, options = {}) {
     if (isDemo) return demoApi(path, options);
-    const response = await fetch(path, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        "X-Telegram-Init-Data": initData,
-        "X-Admin-Key": adminKey,
-        ...(options.headers || {}),
-      },
-    });
+    // Таймаут, чтобы интерфейс никогда не висел вечно на мёртвом соединении.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 60000);
+    let response;
+    try {
+      response = await fetch(path, {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Telegram-Init-Data": initData,
+          "X-Admin-Key": adminKey,
+          ...(options.headers || {}),
+        },
+      });
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        throw new Error("Сервер не отвечает дольше минуты. Проверьте соединение и обновите страницу.");
+      }
+      throw new Error("Нет связи с сервером. Проверьте соединение и обновите страницу.");
+    } finally {
+      clearTimeout(timer);
+    }
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
       const detail = body.detail || `Ошибка сервера: ${response.status}`;
