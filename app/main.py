@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 import time
@@ -11,6 +12,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import auth, database, pin, telegram, worker
+
+
+logger = logging.getLogger("app.forwarder")
 
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -48,6 +52,7 @@ def require_admin(x_telegram_init_data: str | None = Header(default=None)):
     try:
         return auth.validate_init_data(x_telegram_init_data or "")
     except PermissionError as exc:
+        logger.warning("Авторизация отклонена: %s", exc)
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 

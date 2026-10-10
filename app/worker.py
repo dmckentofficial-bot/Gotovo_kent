@@ -106,6 +106,11 @@ def validate_configuration():
         results.append({"source": source, "available": True, "posts": len(posts)})
     bot = telegram.bot_request("getMe")
     chat = telegram.bot_request("getChat", {"chat_id": config["destination"]})
+    if chat.get("type") != "channel":
+        raise RuntimeError(
+            "Канал назначения должен быть настоящим Telegram-каналом. "
+            "Укажите @username канала, а не личную переписку."
+        )
     member = telegram.bot_request(
         "getChatMember", {"chat_id": config["destination"], "user_id": bot["id"]}
     )

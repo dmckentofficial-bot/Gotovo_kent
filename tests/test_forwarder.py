@@ -334,6 +334,46 @@ class DatabaseTests(unittest.TestCase):
 
 
 class WorkerTests(unittest.TestCase):
+    def test_destination_must_be_a_real_channel(self):
+        config = {
+            "sources": ["source_one"],
+            "destination": "8967870222",
+            "filter_enabled": False,
+            "filter_terms": "",
+            "filter_mode": "any",
+            "enabled": True,
+        }
+        with patch.object(database, "get_config", return_value=config), \
+             patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "fetch_public_posts", return_value=[{"id": "1", "text": "x", "media": []}]), \
+             patch.object(telegram, "bot_request", side_effect=lambda name, data=None: {
+                 "getMe": {"ok": True, "id": 42, "username": "bot_name"},
+                 "getChat": {"ok": True, "type": "private", "title": "", "username": ""},
+             }.get(name, {})):
+            with self.assertRaisesRegex(RuntimeError, "настоящим Telegram-каналом"):
+                worker.validate_configuration()
+
+    def test_destination_channel_requires_admin(self):
+        config = {
+            "sources": ["source_one"],
+            "destination": "@real_channel",
+            "filter_enabled": False,
+            "filter_terms": "",
+            "filter_mode": "any",
+            "enabled": True,
+        }
+        with patch.object(database, "get_config", return_value=config), \
+             patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "fetch_public_posts", return_value=[{"id": "1", "text": "x", "media": []}]), \
+             patch.dict(os.environ, {"ADMIN_TELEGRAM_ID": "8967870222"}), \
+             patch.object(telegram, "bot_request", side_effect=lambda name, data=None: {
+                 "getMe": {"ok": True, "id": 42, "username": "bot_name"},
+                 "getChat": {"ok": True, "type": "channel", "title": "Real Channel", "username": "real_channel"},
+                 "getChatMember": {"ok": True, "status": "member"},
+             }.get(name, {})):
+            with self.assertRaisesRegex(RuntimeError, "администратором"):
+                worker.validate_configuration()
+
     def test_polling_processes_new_posts_from_every_source(self):
         config = {
             "sources": ["source_one", "source_two"],
