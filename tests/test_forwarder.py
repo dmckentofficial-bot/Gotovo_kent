@@ -125,6 +125,101 @@ class MessageTests(unittest.TestCase):
 
         self.assertEqual(send.call_args.kwargs["data"]["text"], "Без изменений")
 
+    def test_publish_post_uses_copy_message_for_full_volume(self):
+        # Пост с привязкой к источнику обязан идти через copyMessage,
+        # а не через скачивание/перезалив (там терялись текст и качество).
+        post = {"id": "777", "source_username": "some_channel", "text": "snippet", "media": []}
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch("app.telegram.requests.post", return_value=self._bot_response()) as send:
+            result = telegram.publish_post(post, "@dest", "")
+
+        self.assertTrue(result)
+        methods = [call.args[0].rsplit("/", 1)[-1] for call in send.call_args_list]
+        self.assertEqual(methods, ["copyMessage"])
+        data = send.call_args_list[0].kwargs["data"]
+        self.assertEqual(data["from_chat_id"], "@some_channel")
+        self.assertEqual(data["message_id"], 777)
+        self.assertEqual(data["chat_id"], "@dest")
+
+    def test_forward_message_falls_back_to_forward_on_copy_error(self):
+        class FailOnce:
+            def __init__(self):
+                self.calls = 0
+
+            def __call__(self, *args, **kwargs):
+                self.calls += 1
+                method = args[0].rsplit("/", 1)[-1] if args else ""
+                if method == "copyMessage":
+                    raise RuntimeError("Telegram Bot API (400): message can't be copied")
+                class Response:
+                    ok = True
+                    status_code = 200
+
+                    def json(self):
+                        return {"ok": True, "result": {"message_id": 1}}
+                return Response()
+
+        responder = FailOnce()
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch("app.telegram.requests.post", side_effect=responder):
+            result = telegram.forward_message("@dest", "@src", 5)
+
+        self.assertTrue(result)
+        self.assertEqual(responder.calls, 2)
+
+    def test_signature_is_merged_into_copied_text_via_edit(self):
+        copied = {"message_id": 10, "text": "Оригинал", "entities": []}
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch("app.telegram.requests.post", return_value=self._bot_response()) as send:
+            telegram._apply_signature("@dest", copied, "Подпись")
+
+        data = send.call_args.kwargs["data"]
+        self.assertEqual(data["text"], "Оригинал\n\nПодпись")
+
+    def test_fetch_single_post_returns_matching_id(self):
+        html = """
+        <div class="tgme_widget_message_wrap" data-post="chan/5">
+          <div class="tgme_widget_message_text">Короткий</div>
+        </div>
+        <div class="tgme_widget_message_wrap" data-post="chan/9">
+          <div class="tgme_widget_message_text">Полный текст девятого поста</div>
+        </div>
+        """
+
+        class FakeResponse:
+            status_code = 200
+            text = html
+
+            def raise_for_status(self):
+                pass
+
+        with patch("app.telegram.requests.get", return_value=FakeResponse()):
+            post = telegram.fetch_single_post("chan", 9)
+
+        self.assertEqual(post["id"], "9")
+        self.assertEqual(post["text"], "Полный текст девятого поста")
+
+    def test_publish_post_falls_back_to_full_upload_when_copy_impossible(self):
+        # Бота нет в чужом канале: copyMessage невозможен — пост обязан
+        # дойти целиком через перезаливку, а не потеряться с ошибкой.
+        post = {
+            "id": "42",
+            "source_username": "alien_channel",
+            "text": "Полный текст",
+            "media": [{"type": "photo", "url": "https://cdn4.telesco.pe/file/x.jpg"}],
+        }
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "forward_message", side_effect=RuntimeError("message to copy not found")), \
+             patch.object(telegram, "fetch_single_post", return_value=dict(post)), \
+             patch.object(telegram, "download_media", return_value=("photo.jpg", b"photo")), \
+             patch("app.telegram.requests.post", return_value=self._bot_response()) as send:
+            result = telegram.publish_post(post, "@dest", "")
+
+        self.assertTrue(result)
+        methods = [call.args[0].rsplit("/", 1)[-1] for call in send.call_args_list]
+        self.assertIn("sendPhoto", methods)
+        self.assertNotIn("copyMessage", methods)
+
 
 class PinTests(unittest.TestCase):
     def test_hash_and_verify_roundtrip(self):

@@ -51,7 +51,7 @@ def _bot_request(method, data=None, files=None, timeout=30, max_attempts=4):
     for attempt in range(max_attempts):
         try:
             response = requests.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
+                f"https://api.telegram.org/bot{get_bot_token()}/{method}",
                 data=data or {},
                 files=files,
                 timeout=timeout,
@@ -242,6 +242,32 @@ def fetch_public_posts(username):
     return parser.posts
 
 
+def fetch_single_post(username, post_id):
+    """Догружает один конкретный пост для полного текста и медиа.
+
+    Страница списка t.me/s иногда отдаёт обрезанный snippet, а страница
+    отдельного поста t.me/s/{username}/{post_id} содержит текст целиком.
+    Используется как для точного фильтра, так и для fallback-пересылки.
+    """
+    try:
+        response = requests.get(
+            f"https://t.me/s/{username}/{post_id}",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; TelegramMiniApp/1.0)"},
+            timeout=20,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Не удалось загрузить пост @{username}/{post_id}.") from exc
+    parser = PublicFeedParser()
+    parser.feed(response.text)
+    for post in parser.posts:
+        if post.get("id") == str(post_id):
+            return post
+    if parser.posts:
+        return parser.posts[0]
+    raise RuntimeError(f"Пост @{username}/{post_id} не найден в публичной ленте.")
+
+
 def text_units(text):
     return len(text.encode("utf-16-le")) // 2
 
@@ -314,7 +340,179 @@ def _append_signature(text, signature):
     return f"{text}\n\n{signature}" if text else signature
 
 
+def _apply_signature(chat_id, copied, signature):
+    """Добавляет подпись к уже скопированному сообщению.
+
+    Пытается вписать подпись в текст/подпись правкой (одно сообщение),
+    иначе отправляет подпись отдельным сообщением. Оригинал при этом
+    уже скопирован целиком и не страдает.
+    """
+    signature = (signature or "").strip()
+    if not signature or not isinstance(copied, dict):
+        return
+    copied_id = copied.get("message_id")
+    if not copied_id:
+        bot_request("sendMessage", {"chat_id": chat_id, "text": signature}, timeout=30)
+        return
+    try:
+        if copied.get("text") is not None:
+            new_text = f"{copied.get('text', '')}\n\n{signature}" if copied.get("text") else signature
+            if text_units(new_text) > MAX_MESSAGE_UNITS:
+                raise ValueError("too long")
+            payload = {"chat_id": chat_id, "message_id": copied_id, "text": new_text}
+            if copied.get("entities"):
+                payload["entities"] = json.dumps(copied["entities"])
+            bot_request("editMessageText", payload, timeout=30)
+            return
+        if copied.get("caption") is not None:
+            new_caption = f"{copied.get('caption', '')}\n\n{signature}" if copied.get("caption") else signature
+            if text_units(new_caption) > MAX_CAPTION_UNITS:
+                raise ValueError("too long")
+            payload = {"chat_id": chat_id, "message_id": copied_id, "caption": new_caption}
+            if copied.get("caption_entities"):
+                payload["caption_entities"] = json.dumps(copied["caption_entities"])
+            bot_request("editMessageCaption", payload, timeout=30)
+            return
+    except (RuntimeError, ValueError):
+        pass
+    # Фото/видео без подписи, кругляшки, голосовые, стикеры, опросы:
+    # подпись отдельным сообщением, оригинал уже на месте целиком.
+    try:
+        bot_request("sendMessage", {"chat_id": chat_id, "text": signature}, timeout=30)
+    except RuntimeError:
+        pass
+
+
+def _russian_copy_error(description):
+    """Переводит типовые ошибки копирования на понятный русский."""
+    lowered = (description or "").lower()
+    if "message to copy not found" in lowered or "message to forward not found" in lowered \
+            or "message_id_invalid" in lowered or "message not found" in lowered:
+        return "Пост не найден в источнике (удалён или неверный ID)."
+    if "message can't be copied" in lowered or "message can't be forwarded" in lowered:
+        return "Источник запретил копирование (защищённый контент)."
+    if "chat not found" in lowered:
+        return "Чат не найден: проверьте username источника и назначения."
+    if "bot is not a member" in lowered or "bot was blocked" in lowered or "forbidden" in lowered:
+        return "Бот не состоит в чате или заблокирован: добавьте его администратором в канал назначения."
+    if "not enough rights" in lowered or "need administrator" in lowered or "can't post" in lowered:
+        return "Боту не хватает прав: дайте право публиковать сообщения в канале назначения."
+    return description or "неизвестная ошибка"
+
+
+def forward_message(chat_id, from_chat_id, message_id, signature=""):
+    """Пересылает сообщение серверным копированием — всё 1-в-1.
+
+    copyMessage создаёт НОВОЕ сообщение без метки «переслано из», выглядит так,
+    будто вы опубликовали его сами. Сервер Telegram копирует оригинал целиком:
+    полный текст любой длины, все фото/видео/альбомы, форматирование, entities,
+    ссылки, превью, кругляшки, голосовые — без скачивания и без сжатия.
+    """
+    try:
+        message_id = int(message_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Некорректный ID поста: {message_id!r}.") from exc
+    if isinstance(from_chat_id, str) and from_chat_id.lstrip("-").isdigit():
+        source = from_chat_id.strip()
+    else:
+        source = str(from_chat_id).strip()
+        if not source.startswith("@"):
+            source = f"@{source}"
+    copied = None
+    copy_error = ""
+    try:
+        copied = bot_request(
+            "copyMessage",
+            data={
+                "chat_id": chat_id,
+                "from_chat_id": source,
+                "message_id": message_id,
+            },
+            timeout=30,
+        )
+    except RuntimeError as exc:
+        copy_error = str(exc)
+    if copied is None and copy_error:
+        # copyMessage не умеет редкие типы — пробуем обычный forward (с меткой,
+        # но тоже целиком и без потерь).
+        try:
+            bot_request(
+                "forwardMessage",
+                data={
+                    "chat_id": chat_id,
+                    "from_chat_id": source,
+                    "message_id": message_id,
+                },
+                timeout=30,
+            )
+            return True
+        except RuntimeError as exc:
+            raise RuntimeError(_russian_copy_error(str(exc) or copy_error)) from exc
+    if copied is None:
+        raise RuntimeError(_russian_copy_error(copy_error))
+    _apply_signature(chat_id, copied, signature)
+    return True
+
+
+def _needs_upload_fallback(description):
+    """Ошибки, при которых серверная копия невозможна, но перезаливка сработает."""
+    lowered = (description or "").lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "message to copy not found",
+            "message to forward not found",
+            "message_id_invalid",
+            "message not found",
+            "message can't be copied",
+            "message can't be forwarded",
+            "bot is not a member",
+            "bot was blocked",
+            "forbidden",
+            "chat not found",
+        )
+    )
+
+
 def publish_post(post, destination, signature=""):
+    """Пересылает пост в полном объёме (текст + все медиа).
+
+    Два пути, от лучшего к запасному:
+    1. Серверное копирование copyMessage по (source, id) — всё 1-в-1 без
+       скачивания и сжатия, выглядит как собственный пост. Работает, когда
+       бот состоит в канале-источнике (например, ваши собственные каналы,
+       куда бота добавили администратором).
+    2. Полная перезаливка — для чужих публичных каналов, куда бота не
+       добавили (Telegram не отдаёт их посты ботам напрямую). Тогда текст
+       догружается со страницы отдельного поста целиком, все медиа качаются
+       в оригинале с CDN Telegram и отправляются все до единого: альбомы
+       группами по 10, длинные подписи и тексты — продолжением сообщений.
+       Ничего не теряется, просто пост собирается из тех же частей.
+    """
+    source_username = post.get("source_username") or post.get("from_chat")
+    message_id = post.get("id") or post.get("message_id")
+    if source_username and message_id:
+        try:
+            return forward_message(destination, f"@{source_username}", message_id, signature)
+        except RuntimeError as exc:
+            # Копия невозможна (бота нет в источнике и т.п.) — пробуем перезаливку,
+            # если есть что перезаливать. Иначе пробрасываем понятную ошибку.
+            if not _needs_upload_fallback(str(exc)):
+                raise
+            enriched = dict(post)
+            try:
+                full = fetch_single_post(source_username.lstrip("@"), int(message_id))
+                if full.get("text"):
+                    enriched["text"] = full["text"]
+                if full.get("media"):
+                    enriched["media"] = full["media"]
+            except (RuntimeError, ValueError):
+                pass
+            if not enriched.get("text", "").strip() and not enriched.get("media"):
+                raise
+            post = enriched
+
+    # Перезаливка в полном объёме (fallback и ручной вызов без привязки).
     text = _append_signature(post.get("text", "").strip(), signature)
     media_items = post.get("media", [])
     if len(media_items) > 1:
@@ -361,9 +559,9 @@ def publish_post(post, destination, signature=""):
             )
         for part in caption_parts:
             bot_request("sendMessage", {"chat_id": destination, "text": part})
+        return True
     elif text:
         for part in split_text(text, MAX_MESSAGE_UNITS):
             bot_request("sendMessage", {"chat_id": destination, "text": part})
-    else:
-        return False
-    return True
+        return True
+    return False

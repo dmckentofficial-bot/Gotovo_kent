@@ -28,7 +28,7 @@ def _matches_filter(text, config):
 def poll_once():
     config = database.get_config()
     database.set_state("last_error", "")
-    if not telegram.BOT_TOKEN:
+    if not telegram.get_bot_token():
         database.set_state("last_error", "На сервере не задан токен бота.")
         return
     if not config.get("enabled"):
@@ -65,11 +65,23 @@ def poll_once():
                 if database.already_forwarded(source, post.get("id", "")):
                     database.set_cursor(source, post_id)
                     continue
+                # Для точного фильтра догружаем полный текст отдельного поста:
+                # в общей ленте иногда лежит обрезанный snippet.
+                try:
+                    full = telegram.fetch_single_post(source, post_id)
+                    if full.get("text"):
+                        post["text"] = full["text"]
+                    if full.get("media"):
+                        post["media"] = full["media"]
+                except RuntimeError:
+                    pass
                 if not _matches_filter(post.get("text", ""), config):
                     database.write_history(post, source, "filtered")
                     database.set_cursor(source, post_id)
                     continue
                 try:
+                    # Добавляем source_username для copyMessage
+                    post["source_username"] = source
                     if telegram.publish_post(post, destination, signature):
                         database.write_history(post, source, "forwarded")
                     else:
@@ -79,7 +91,10 @@ def poll_once():
                     database.write_history(post, source, "error", str(exc))
                     database.set_state("last_error", f"@{source}, пост {post_id}: {exc}")
                     break
-        except (RuntimeError, ValueError) as exc:
+        except RuntimeError as exc:
+            # Пустой канал — не ошибка, просто нечего забирать.
+            if "не найдено доступных публикаций" in str(exc):
+                continue
             database.set_state("last_error", f"@{source}: {exc}")
         except Exception as exc:
             database.set_state("last_error", f"@{source}: непредвиденная ошибка ({type(exc).__name__}).")
@@ -97,7 +112,7 @@ def run(stop_event):
 
 def validate_configuration():
     config = database.get_config()
-    if not telegram.BOT_TOKEN:
+    if not telegram.get_bot_token():
         raise RuntimeError("На сервере не задан TELEGRAM_BOT_TOKEN.")
     if not config["sources"]:
         raise ValueError("Добавьте хотя бы один канал-источник.")
