@@ -58,7 +58,19 @@ def _owner_id():
 
 
 def _app_url():
+    stored = database.get_state("app_url", "").strip().rstrip("/")
+    if stored:
+        return stored
     return (os.environ.get("APP_URL") or os.environ.get("RENDER_EXTERNAL_URL", "")).strip().rstrip("/")
+
+
+def set_app_url(url):
+    """Сохраняет публичный URL для кнопки Mini App (клавиатура + меню)."""
+    clean = (url or "").strip().rstrip("/")
+    database.set_state("app_url", clean)
+    if clean:
+        os.environ["APP_URL"] = clean
+    return clean
 
 
 def _mini_app_keyboard():
