@@ -48,6 +48,10 @@ class PinChangePayload(BaseModel):
     pin: str = Field(pattern=pin.PIN_PATTERN)
 
 
+class AccessPayload(BaseModel):
+    password: str = Field(min_length=4, max_length=8, pattern=r"^\d{4,8}$")
+
+
 def _key_fail_state():
     count = int(database.get_state("key_fails", "0") or "0")
     until = float(database.get_state("key_locked_until", "0") or "0")
@@ -69,29 +73,55 @@ def _register_key_fail():
         database.set_state("key_fails", str(count))
 
 
+def _authorize_key(key):
+    """Ключ считается верным, если он совпадает с резервным ADMIN_KEY или с паролем доступа."""
+    if auth.check_admin_key(key):
+        return True
+    stored = database.get_state("access_hash", "")
+    return bool(stored and pin.verify_pin(stored, key))
+
+
+def _password_user():
+    admin_id = os.environ.get("ADMIN_TELEGRAM_ID", "").strip()
+    return {
+        "id": int(admin_id) if admin_id.isdigit() else admin_id,
+        "username": "admin",
+        "first_name": "Владелец",
+        "auth_method": "password",
+    }
+
+
 def require_admin(
     x_telegram_init_data: str | None = Header(default=None),
     x_admin_key: str | None = Header(default=None),
 ):
     key = (x_admin_key or "").strip()
-    if auth.check_admin_key(key):
+    if key and _authorize_key(key):
         # Правильный пароль работает всегда и снимает блокировку.
         database.set_state("key_fails", "0")
         database.set_state("key_locked_until", "0")
-        return auth.authenticate(x_telegram_init_data or "", key)
-    if key and _key_locked():
-        _, until = _key_fail_state()
-        wait = max(0, int(until - time.time()))
-        raise HTTPException(status_code=429, detail=f"Слишком много неверных попыток. Подождите {wait} с.")
-    try:
-        return auth.authenticate(x_telegram_init_data or "", key)
-    except PermissionError as exc:
-        if key:
-            _register_key_fail()
-        logger.warning("Авторизация отклонена: %s", exc)
-        raise HTTPException(
-            status_code=401, detail=str(exc), headers={"X-Requires-Auth": "1"}
-        ) from exc
+        return _password_user()
+    if x_telegram_init_data:
+        try:
+            return auth.authenticate(x_telegram_init_data, "")
+        except PermissionError as exc:
+            logger.warning("Авторизация отклонена: %s", exc)
+            raise HTTPException(
+                status_code=401, detail=str(exc), headers={"X-Requires-Auth": "1"}
+            ) from exc
+    if key:
+        was_locked = _key_locked()
+        _register_key_fail()
+        if was_locked:
+            _, until = _key_fail_state()
+            wait = max(0, int(until - time.time()))
+            raise HTTPException(status_code=429, detail=f"Слишком много неверных попыток. Подождите {wait} с.")
+        raise HTTPException(status_code=401, detail="Неверный пароль доступа.", headers={"X-Requires-Auth": "1"})
+    raise HTTPException(
+        status_code=401,
+        detail="Введите пароль доступа или откройте приложение через Telegram.",
+        headers={"X-Requires-Auth": "1"},
+    )
 
 
 def _pin_gate():
@@ -304,6 +334,42 @@ def pin_disable(payload: PinPayload, _user=Depends(require_admin)):
     database.set_state("pin_hash", "")
     _pin_reset()
     return {"enabled": False}
+
+
+@app.get("/api/access/status")
+def access_status():
+    return {"configured": bool(database.get_state("access_hash", ""))}
+
+
+@app.post("/api/access/setup")
+def access_setup(
+    payload: AccessPayload,
+    x_telegram_init_data: str | None = Header(default=None),
+    x_admin_key: str | None = Header(default=None),
+):
+    if database.get_state("access_hash", ""):
+        # Пароль уже задан: менять его разрешено только авторизованному владельцу.
+        require_admin(x_telegram_init_data, x_admin_key)
+    database.set_state("access_hash", pin.hash_pin(payload.password))
+    database.set_state("key_fails", "0")
+    database.set_state("key_locked_until", "0")
+    return {"ok": True}
+
+
+@app.post("/api/access/verify")
+def access_verify(payload: AccessPayload):
+    stored = database.get_state("access_hash", "")
+    if stored and pin.verify_pin(stored, payload.password):
+        database.set_state("key_fails", "0")
+        database.set_state("key_locked_until", "0")
+        return {"ok": True}
+    was_locked = _key_locked()
+    _register_key_fail()
+    if was_locked:
+        _, until = _key_fail_state()
+        wait = max(0, int(until - time.time()))
+        raise HTTPException(status_code=429, detail=f"Слишком много неверных попыток. Подождите {wait} с.")
+    raise HTTPException(status_code=401, detail="Неверный пароль доступа.")
 
 
 @app.get("/api/history")

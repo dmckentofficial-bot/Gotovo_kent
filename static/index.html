@@ -37,7 +37,7 @@
         <button class="pin-key" type="button" data-key="7">7</button>
         <button class="pin-key" type="button" data-key="8">8</button>
         <button class="pin-key" type="button" data-key="9">9</button>
-        <button class="pin-key pin-key-blank" type="button" tabindex="-1" aria-hidden="true"></button>
+        <button class="pin-key pin-key-action" type="button" data-key="ok" aria-label="Готово">✓</button>
         <button class="pin-key" type="button" data-key="0">0</button>
         <button class="pin-key pin-key-action" type="button" data-key="back" aria-label="Удалить">⌫</button>
       </div>
@@ -158,6 +158,15 @@
             <button id="pin-setup" class="button primary" type="button">Установить код</button>
             <button id="pin-change" class="button secondary" type="button" hidden>Сменить код</button>
             <button id="pin-disable" class="button danger" type="button" hidden>Отключить</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <p class="eyebrow">БЕЗОПАСНОСТЬ</p>
+          <h2 class="section-title">Пароль доступа</h2>
+          <p class="hint">Создаётся при первом входе из браузера. Нужен, чтобы управлять пересылкой без Telegram. От 4 до 8 цифр.</p>
+          <div class="button-row">
+            <button id="access-setup" class="button secondary" type="button">Сменить пароль доступа</button>
           </div>
         </div>
 

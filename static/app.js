@@ -38,6 +38,7 @@
     pinChange: $("#pin-change"),
     pinDisable: $("#pin-disable"),
     pinHint: $("#pin-security-hint"),
+    accessSetup: $("#access-setup"),
     save: $("#save"),
     test: $("#test"),
     // signature
