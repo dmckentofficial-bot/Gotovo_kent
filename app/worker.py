@@ -797,7 +797,7 @@ def configure_menu_button(app_url, admin_id=None):
         return
     menu_button = {
         "type": "web_app",
-        "text": "Открыть KEN-T",
+        "text": "Открыть Prime pro",
         "web_app": {"url": app_url.rstrip("/") + "/"},
     }
     targets = [None]

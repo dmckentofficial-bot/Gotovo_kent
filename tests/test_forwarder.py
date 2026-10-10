@@ -846,7 +846,7 @@ class MenuButtonTests(unittest.TestCase):
         self.assertIn(555, by_chat)    # кнопка в чате владельца
         menu = json.loads(by_chat[None]["menu_button"])
         self.assertEqual(menu["web_app"]["url"], "https://example.com/")
-        self.assertEqual(menu["text"], "Открыть KEN-T")
+        self.assertEqual(menu["text"], "Открыть Prime pro")
 
 
 class MtprotoTests(unittest.TestCase):
