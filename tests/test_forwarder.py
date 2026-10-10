@@ -756,6 +756,50 @@ class MyChannelsBotTests(unittest.TestCase):
         self.assertEqual(config["destination"], "@onlyone")
 
 
+class EmptyPostTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.original_path = database.DATABASE_PATH
+        database.DATABASE_PATH = Path(self.tmp_dir.name) / "test.sqlite3"
+        database.initialize()
+
+    def tearDown(self):
+        database.DATABASE_PATH = self.original_path
+        self.tmp_dir.cleanup()
+
+    def test_empty_post_is_skipped_not_stuck(self):
+        from app import worker
+
+        config = {
+            "sources": ["source_one"],
+            "destination": "@destination",
+            "destinations": ["@destination"],
+            "filter_enabled": False,
+            "filter_terms": "",
+            "filter_mode": "any",
+            "enabled": True,
+        }
+        feeds = {"source_one": [
+            {"id": "2", "text": "", "media": []},
+            {"id": "3", "text": "Живой пост", "media": []},
+        ]}
+        sent = []
+        cursors = {"source_one": 1}
+
+        with patch.object(database, "get_config", return_value=config), \
+             patch.object(database, "get_cursor", side_effect=lambda source: cursors[source]), \
+             patch.object(database, "set_cursor", side_effect=lambda source, value: cursors.update({source: value})), \
+             patch.object(telegram, "fetch_public_posts", side_effect=lambda source: feeds[source]), \
+             patch.object(telegram, "fetch_single_post", side_effect=RuntimeError("нет")), \
+             patch.object(telegram, "publish_post", side_effect=lambda post, destination, signature="": sent.append(destination) or True), \
+             patch.object(telegram, "BOT_TOKEN", "123:test"):
+            worker.poll_once()
+
+        # пустой пост пропущен, живой доставлен, курсор ушёл дальше обоих
+        self.assertEqual(sent, ["@destination"])
+        self.assertEqual(cursors, {"source_one": 3})
+
+
 class MenuButtonTests(unittest.TestCase):
     class Response:
         ok = True

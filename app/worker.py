@@ -694,6 +694,14 @@ def poll_once():
                     database.write_history(post, source, "filtered")
                     database.set_cursor(source, post_id)
                     continue
+                if not post.get("text", "").strip() and not post.get("media"):
+                    # Пост без текста и медиа (стикер, гео, дайс и т.п.):
+                    # пересылать нечего, очередь не блокируем.
+                    database.write_history(
+                        post, source, "skipped", "Нет текста и медиа для пересылки."
+                    )
+                    database.set_cursor(source, post_id)
+                    continue
                 try:
                     # Добавляем source_username для copyMessage
                     post["source_username"] = source
