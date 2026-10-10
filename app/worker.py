@@ -18,13 +18,15 @@ HELP_TEXT = (
     "текст, фото и видео в оригинале, кнопки.\n\n"
     "Просто перешлите мне любой пост из любого канала.\n\n"
     "Кнопки меню делают то же, что вкладки приложения:\n"
-    "▶️/⏹ — запустить/остановить, 📊 — статус, 📈 — статистика,\n"
+    "▶️/⏹ — запустить/остановить, ✍️ — подпись к постам, 📈 — статистика,\n"
     "📋 — копируемые каналы, 📢 — свои каналы, ➕/➖ — добавить/убрать источник,\n"
     "✅ — проверка, ❓ — помощь.\n\n"
     "Команды:\n"
     "/status — состояние пересылки\n"
     "/stats — счётчики\n"
     "/on и /off — включить/выключить\n"
+    "/sig текст — включить подпись\n"
+    "/sigoff — выключить подпись\n"
     "/list — копируемые каналы и свои\n"
     "/add канал — добавить источник\n"
     "/del канал — убрать источник\n"
@@ -40,7 +42,7 @@ MAX_SOURCES = 5
 # Кнопки меню (текст кнопок приходит обычным сообщением).
 BTN_RUN = "▶️ Запустить"
 BTN_STOP = "⏹ Остановить"
-BTN_STATUS = "📊 Статус"
+BTN_SIGN = "✍️ Подпись"
 BTN_STATS = "📈 Статистика"
 BTN_LIST = "📋 Каналы (Cop)"
 BTN_MY = "📢 Мои каналы"
@@ -79,7 +81,7 @@ def _main_keyboard():
     config = database.get_config()
     toggle = BTN_STOP if config.get("enabled") else BTN_RUN
     rows = [
-        [{"text": toggle}, {"text": BTN_STATUS}],
+        [{"text": toggle}, {"text": BTN_SIGN}],
         [{"text": BTN_STATS}, {"text": BTN_TEST}],
         [{"text": BTN_LIST}, {"text": BTN_MY}],
         [{"text": BTN_ADD}, {"text": BTN_DEL}],
@@ -141,6 +143,8 @@ def _consume_pending(action, argument):
         return _cmd_destination(argument)
     if action == "mydest":
         return _cmd_my_destination(argument)
+    if action == "sig":
+        return _cmd_signature_set(argument)
     return ""
 
 
@@ -192,6 +196,45 @@ def _cmd_stats():
         f"Ошибок: {stats['errors']}\n"
         f"Всего событий: {stats['total']}"
     )
+
+
+SIGNATURE_OFF_WORDS = {"выкл", "выключить", "off", "нет", "—", "-"}
+
+SIGNATURE_ASK = (
+    "Пришлите текст подписи — добавлю её в конец каждого пересылаемого поста.\n"
+    "Чтобы выключить, пришлите «выкл»."
+)
+
+
+def _signature_state_text():
+    config = database.get_config()
+    if not config.get("signature_enabled"):
+        return "Подпись выключена. Пришлите текст — включу и добавлю к постам."
+    text = (config.get("signature_text") or "").strip()
+    shown = text if len(text) <= 200 else text[:200] + "…"
+    return f"Подпись включена:\n{shown}\n\nПришлите новый текст, чтобы сменить, или «выкл»."
+
+
+def _cmd_signature_set(argument):
+    text = (argument or "").strip()
+    if not text:
+        return "Использование: /sig текст подписи."
+    if text.casefold() in SIGNATURE_OFF_WORDS:
+        return _cmd_signature_off()
+    if len(text) > 1000:
+        return "Подпись слишком длинная (максимум 1000 символов)."
+    config = database.get_config()
+    config["signature_enabled"] = True
+    config["signature_text"] = text
+    database.set_config(config)
+    return "Подпись включена — теперь добавляется к каждому посту."
+
+
+def _cmd_signature_off():
+    config = database.get_config()
+    config["signature_enabled"] = False
+    database.set_config(config)
+    return "Подпись выключена."
 
 
 def _cmd_set_enabled(enabled):
@@ -355,6 +398,8 @@ def _handle_owner_command(text):
         "/stats": _cmd_stats,
         "/on": lambda: _cmd_set_enabled(True),
         "/off": lambda: _cmd_set_enabled(False),
+        "/sig": lambda: _cmd_signature_set(argument),
+        "/sigoff": lambda: _cmd_signature_off(),
         "/list": _cmd_list,
         "/add": lambda: _cmd_add(argument),
         "/del": lambda: _cmd_delete(argument),
@@ -448,15 +493,16 @@ def _handle_private_update(update, owner_id, destinations):
         return
     if owner_id is not None and sender.get("id") != owner_id:
         return
-    if text in (BTN_RUN, BTN_STOP, BTN_STATUS, BTN_STATS, BTN_LIST, BTN_MY,
+    if text in (BTN_RUN, BTN_STOP, BTN_SIGN, BTN_STATS, BTN_LIST, BTN_MY,
                 BTN_TEST, BTN_HELP, BTN_ADD, BTN_DEL):
         _clear_pending()
         if text == BTN_RUN:
             _answer_private(chat.get("id"), _cmd_set_enabled(True), keyboard="main")
         elif text == BTN_STOP:
             _answer_private(chat.get("id"), _cmd_set_enabled(False), keyboard="main")
-        elif text == BTN_STATUS:
-            _answer_private(chat.get("id"), _cmd_status(), keyboard="main")
+        elif text == BTN_SIGN:
+            _answer_private(chat.get("id"), _signature_state_text(), keyboard="main")
+            _set_pending(chat.get("id"), "sig")
         elif text == BTN_STATS:
             _answer_private(chat.get("id"), _cmd_stats(), keyboard="main")
         elif text == BTN_LIST:

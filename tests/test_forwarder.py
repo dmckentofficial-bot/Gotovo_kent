@@ -1122,7 +1122,7 @@ class BotCommandsTests(unittest.TestCase):
         self.assertEqual(len(payloads), 1)
         markup = json.loads(payloads[0]["reply_markup"])
         flat = [button.get("text", "") for row in markup["keyboard"] for button in row]
-        self.assertIn("📊 Статус", flat)
+        self.assertIn("✍️ Подпись", flat)
         self.assertFalse(any(button.get("web_app") for row in markup["keyboard"] for button in row))
 
     def test_answer_counter_increments_and_errors_recorded(self):
@@ -1224,7 +1224,7 @@ class BotCommandsTests(unittest.TestCase):
             answers.append(data.get("text", ""))
             return {"message_id": 1}
 
-        self._drain_texts(["📊 Статус", "📈 Статистика", "❓ Помощь"], bot_request)
+        self._drain_texts(["/status", "📈 Статистика", "❓ Помощь"], bot_request)
         self.assertIn("Пересылка", answers[0])
         self.assertIn("Переслано", answers[1])
         self.assertIn("Команды", answers[2])
@@ -1271,6 +1271,39 @@ class BotCommandsTests(unittest.TestCase):
         self.assertIn("Копируемые каналы", answers[1])
         self.assertNotIn("newchanname", database.get_config()["sources"])
 
+    def test_signature_button_sets_and_disables(self):
+        from app import database
+
+        answers = []
+
+        def bot_request(method, data):
+            answers.append(data.get("text", ""))
+            return {"message_id": 1}
+
+        self._drain_texts(["✍️ Подпись", "Читайте нас здесь!", "✍️ Подпись", "выкл"], bot_request)
+        self.assertIn("Подпись выключена", answers[0])
+        self.assertIn("Подпись включена", answers[1])
+        self.assertIn("Подпись включена", answers[2])
+        self.assertIn("выключена", answers[3].lower())
+        config = database.get_config()
+        self.assertFalse(config["signature_enabled"])
+
+    def test_sig_commands(self):
+        from app import database
+
+        answers = []
+
+        def bot_request(method, data):
+            answers.append(data.get("text", ""))
+            return {"message_id": 1}
+
+        self._drain_texts(["/sig Мой канал", "/sigoff"], bot_request)
+        self.assertIn("Подпись включена", answers[0])
+        self.assertIn("выключена", answers[1].lower())
+        config = database.get_config()
+        self.assertEqual(config["signature_text"], "Мой канал")
+        self.assertFalse(config["signature_enabled"])
+
     def test_every_answer_carries_main_keyboard(self):
         payloads = []
 
@@ -1280,11 +1313,11 @@ class BotCommandsTests(unittest.TestCase):
             return {"message_id": 1}
 
         with patch.dict("os.environ", {"APP_URL": "https://example.com"}):
-            self._drain_texts(["📊 Статус"], bot_request)
+            self._drain_texts(["✍️ Подпись", "Мой текст"], bot_request)
 
         markup = json.loads(payloads[0]["reply_markup"])
         flat = [button.get("text", "") for row in markup["keyboard"] for button in row]
-        self.assertIn("📊 Статус", flat)
+        self.assertIn("✍️ Подпись", flat)
         self.assertIn("📢 Мои каналы", flat)
         self.assertFalse(any(button.get("web_app") for row in markup["keyboard"] for button in row))
 
