@@ -618,13 +618,32 @@
     };
   })();
 
-  /* ---------- вход по паролю доступа ---------- */
+  /* ---------- вход по паролю доступа (установка и повторный вход) ---------- */
+  const ACCESS_MIN = 4;
+  const ACCESS_MAX = 8;
   const loginGate = (() => {
     let buffer = "";
+    let stage = 0;
+    let first = null;
+    let mode = "login";
+    let submitFn = null;
+    let resolver = null;
+
+    const SUBTITLES = {
+      login: "Введите пароль доступа",
+      setup0: "Придумайте пароль",
+      setup1: "Повторите пароль",
+    };
+
+    function currentSubtitle() {
+      if (mode === "setup") return stage === 0 ? SUBTITLES.setup0 : SUBTITLES.setup1;
+      return SUBTITLES.login;
+    }
 
     function renderDots() {
       nodes.loginDots.replaceChildren();
-      for (let i = 0; i < PIN_DIGITS; i += 1) {
+      const count = Math.max(ACCESS_MIN, buffer.length);
+      for (let i = 0; i < count; i += 1) {
         const dot = document.createElement("span");
         if (i < buffer.length) dot.className = "filled";
         nodes.loginDots.append(dot);
@@ -643,13 +662,18 @@
 
     function reset() { buffer = ""; renderDots(); }
 
-    function show() {
+    function open(nextMode, submit) {
+      mode = nextMode;
+      stage = 0;
+      first = null;
+      submitFn = submit;
       buffer = "";
       setError("");
-      nodes.loginSubtitle.textContent = "Введите пароль доступа";
       renderDots();
+      nodes.loginSubtitle.textContent = currentSubtitle();
       nodes.loginScreen.hidden = false;
       matrixFx.start();
+      return new Promise((resolve) => { resolver = resolve; });
     }
 
     function hide() {
@@ -657,38 +681,62 @@
       matrixFx.hide();
     }
 
-    async function attempt(code) {
-      adminKey = code;
-      try { localStorage.setItem(ADMIN_KEY_STORAGE, code); } catch (_) {}
-      try {
-        await api("/api/pin/status");
-      } catch (error) {
-        adminKey = "";
-        try { localStorage.removeItem(ADMIN_KEY_STORAGE); } catch (_) {}
-        setError(error.message === "Нужен вход по паролю доступа." ? "Неверный пароль" : (error.message || "Не удалось войти."));
-        nodes.loginSubtitle.textContent = "Введите пароль доступа";
+    async function confirmEntry() {
+      const value = buffer;
+      if (value.length < ACCESS_MIN) {
+        setError(`Минимум ${ACCESS_MIN} цифры.`);
         haptic("heavy");
-        reset();
-        return false;
+        return;
       }
-      hide();
+      if (mode === "setup") {
+        if (stage === 0) {
+          first = value;
+          stage = 1;
+          buffer = "";
+          setError("");
+          renderDots();
+          nodes.loginSubtitle.textContent = currentSubtitle();
+          return;
+        }
+        if (value !== first) {
+          setError("Пароли не совпадают. Начните заново.");
+          haptic("heavy");
+          stage = 0;
+          first = null;
+          buffer = "";
+          renderDots();
+          nodes.loginSubtitle.textContent = currentSubtitle();
+          return;
+        }
+      }
+      try {
+        await submitFn(value);
+      } catch (error) {
+        setError(error.message || "Не удалось сохранить пароль.");
+        haptic("heavy");
+        buffer = "";
+        renderDots();
+        if (mode === "setup") {
+          stage = 0;
+          first = null;
+          nodes.loginSubtitle.textContent = currentSubtitle();
+        }
+        return;
+      }
       hapticResult("success");
-      return true;
+      const done = resolver;
+      resolver = null;
+      hide();
+      done?.(value);
     }
 
     function press(key) {
       if (key === "back") { buffer = buffer.slice(0, -1); renderDots(); return; }
-      if (!/^\d$/.test(key) || buffer.length >= PIN_DIGITS) return;
+      if (key === "ok") { confirmEntry(); return; }
+      if (!/^\d$/.test(key) || buffer.length >= ACCESS_MAX) return;
       haptic("light");
       buffer += key;
       renderDots();
-      if (buffer.length === PIN_DIGITS) {
-        const code = buffer;
-        reset();
-        setTimeout(async () => {
-          if (await attempt(code)) start();
-        }, 150);
-      }
     }
 
     nodes.loginPad.addEventListener("click", (event) => {
@@ -696,10 +744,58 @@
       if (button) press(button.dataset.key);
     });
 
-    return { show, hide };
+    return { open, hide };
   })();
 
-  function showLogin() { loginGate.show(); }
+  function showLogin() {
+    loginGate.open("login", verifyAccessPassword).then(() => { start(); });
+  }
+
+  /* ---------- работа с паролем доступа на сервере ---------- */
+  function rememberAccessPassword(value) {
+    adminKey = value;
+    try { localStorage.setItem(ADMIN_KEY_STORAGE, value); } catch (_) {}
+  }
+
+  function forgetAccessPassword() {
+    adminKey = "";
+    try { localStorage.removeItem(ADMIN_KEY_STORAGE); } catch (_) {}
+  }
+
+  // Создание пароля при первом входе (сервер разрешает, пока пароль не задан).
+  async function saveAccessPassword(password) {
+    await api("/api/access/setup", { method: "POST", body: JSON.stringify({ password }) });
+    rememberAccessPassword(password);
+  }
+
+  // Проверка пароля при входе (сервер отвечает 401/429 при ошибках).
+  async function verifyAccessPassword(password) {
+    await api("/api/access/verify", { method: "POST", body: JSON.stringify({ password }) });
+    rememberAccessPassword(password);
+  }
+
+  // Полный цикл авторизации из браузера: создание пароля при первом входе или проверка сохранённого.
+  async function ensureBrowserAuth() {
+    let configured = true;
+    try {
+      configured = Boolean((await api("/api/access/status")).configured);
+    } catch (_) {
+      // если статус недоступен — покажем экран входа
+    }
+    if (adminKey) {
+      try {
+        await api("/api/access/verify", { method: "POST", body: JSON.stringify({ password: adminKey }) });
+        return;
+      } catch (_) {
+        forgetAccessPassword();
+      }
+    }
+    if (!configured) {
+      await loginGate.open("setup", saveAccessPassword);
+      return;
+    }
+    await loginGate.open("login", verifyAccessPassword);
+  }
 
   matrixFx.start();
 
@@ -868,6 +964,12 @@
     if (ok) { showNotice("PIN-код отключён.", "success"); await refreshPinSecurity(); }
   });
 
+  nodes.accessSetup.addEventListener("click", async () => {
+    haptic("light");
+    const password = await loginGate.open("setup", saveAccessPassword);
+    if (password) showNotice("Пароль доступа изменён.", "success");
+  });
+
   /* ---------- settings events ---------- */
   nodes.addSource.addEventListener("click", () => {
     if (config.sources.length < MAX_SOURCES) {
@@ -1002,12 +1104,13 @@
 
   async function start() {
     if (isDemo) showNotice("Демо-режим: данные имитированы локально, ничего никуда не пересылается.");
-    if (!initData && !adminKey) {
+    const inTelegram = Boolean(initData);
+    if (!inTelegram) {
+      // Браузер без Telegram: сначала пароль доступа (создать при первом входе или ввести сохранённый).
       nodes.boot.hidden = true;
-      showLogin();
-      return;
+      await ensureBrowserAuth();
     }
-    const byPassword = !initData && Boolean(adminKey);
+    const byPassword = !inTelegram && Boolean(adminKey);
     try {
       const pinStatus = await api("/api/pin/status");
       pinConfigured = Boolean(pinStatus.enabled);
