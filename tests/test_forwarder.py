@@ -559,8 +559,8 @@ class WorkerTests(unittest.TestCase):
         cursors = {source: 1 for source in config["sources"]}
 
         with patch.object(database, "get_config", return_value=config), \
-             patch.object(database, "get_cursor", side_effect=lambda source: cursors[source]), \
-             patch.object(database, "set_cursor", side_effect=lambda source, value: cursors.update({source: value})), \
+             patch.object(database, "get_cursor", side_effect=lambda source, *args, **kwargs: cursors[source]), \
+             patch.object(database, "set_cursor", side_effect=lambda source, value, *args, **kwargs: cursors.update({source: value})), \
              patch.object(database, "already_forwarded", return_value=False), \
              patch.object(database, "write_history"), \
              patch.object(database, "set_state"), \
@@ -586,8 +586,8 @@ class WorkerTests(unittest.TestCase):
         cursors = {"source_one": 1}
 
         with patch.object(database, "get_config", return_value=config), \
-             patch.object(database, "get_cursor", side_effect=lambda source: cursors[source]), \
-             patch.object(database, "set_cursor", side_effect=lambda source, value: cursors.update({source: value})), \
+             patch.object(database, "get_cursor", side_effect=lambda source, *args, **kwargs: cursors[source]), \
+             patch.object(database, "set_cursor", side_effect=lambda source, value, *args, **kwargs: cursors.update({source: value})), \
              patch.object(database, "already_forwarded", return_value=True), \
              patch.object(database, "write_history"), \
              patch.object(database, "set_state"), \
@@ -637,8 +637,8 @@ class MultiDestinationTests(unittest.TestCase):
         cursors = {"source_one": 1}
 
         with patch.object(database, "get_config", return_value=config), \
-             patch.object(database, "get_cursor", side_effect=lambda source: cursors[source]), \
-             patch.object(database, "set_cursor", side_effect=lambda source, value: cursors.update({source: value})), \
+             patch.object(database, "get_cursor", side_effect=lambda source, *args, **kwargs: cursors[source]), \
+             patch.object(database, "set_cursor", side_effect=lambda source, value, *args, **kwargs: cursors.update({source: value})), \
              patch.object(telegram, "fetch_public_posts", side_effect=lambda source: feeds[source]), \
              patch.object(telegram, "publish_post", side_effect=lambda post, destination, signature="": sent.append(destination) or True), \
              patch.object(telegram, "BOT_TOKEN", "123:test"):
@@ -687,6 +687,7 @@ class MyChannelsBotTests(unittest.TestCase):
             "filter_enabled": False, "filter_terms": "", "filter_mode": "any", "enabled": True,
         })
         database.set_state("admin_telegram_id", "777")
+        database.set_config(database.get_config(), database.user_key_for(777))
 
     def tearDown(self):
         database.DATABASE_PATH = self.original_path
@@ -728,7 +729,7 @@ class MyChannelsBotTests(unittest.TestCase):
         self._drain_texts(["\U0001F4E2 Мои каналы", "https://t.me/newmydest"], bot_request)
         self.assertIn("@oldest", answers[0])
         self.assertIn("@newmydest добавлен", answers[1])
-        config = database.get_config()
+        config = database.get_config(database.user_key_for(777))
         self.assertEqual(config["destinations"], ["@oldest", "@newmydest"])
 
     def test_delm_removes_channel(self):
@@ -742,7 +743,7 @@ class MyChannelsBotTests(unittest.TestCase):
 
         self._drain_texts(["/delm @oldest"], bot_request)
         self.assertIn("убран", answers[0])
-        self.assertEqual(database.get_config()["destinations"], [])
+        self.assertEqual(database.get_config(database.user_key_for(777))["destinations"], [])
 
     def test_dest_replaces_whole_list(self):
         from app import database
@@ -751,7 +752,7 @@ class MyChannelsBotTests(unittest.TestCase):
             return {"message_id": 1}
 
         self._drain_texts(["/dest @onlyone"], bot_request)
-        config = database.get_config()
+        config = database.get_config(database.user_key_for(777))
         self.assertEqual(config["destinations"], ["@onlyone"])
         self.assertEqual(config["destination"], "@onlyone")
 
@@ -787,8 +788,8 @@ class EmptyPostTests(unittest.TestCase):
         cursors = {"source_one": 1}
 
         with patch.object(database, "get_config", return_value=config), \
-             patch.object(database, "get_cursor", side_effect=lambda source: cursors[source]), \
-             patch.object(database, "set_cursor", side_effect=lambda source, value: cursors.update({source: value})), \
+             patch.object(database, "get_cursor", side_effect=lambda source, *args, **kwargs: cursors[source]), \
+             patch.object(database, "set_cursor", side_effect=lambda source, value, *args, **kwargs: cursors.update({source: value})), \
              patch.object(telegram, "fetch_public_posts", side_effect=lambda source: feeds[source]), \
              patch.object(telegram, "fetch_single_post", side_effect=RuntimeError("нет")), \
              patch.object(telegram, "publish_post", side_effect=lambda post, destination, signature="": sent.append(destination) or True), \
@@ -798,6 +799,173 @@ class EmptyPostTests(unittest.TestCase):
         # пустой пост пропущен, живой доставлен, курсор ушёл дальше обоих
         self.assertEqual(sent, ["@destination"])
         self.assertEqual(cursors, {"source_one": 3})
+
+
+class MultiUserTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.original_path = database.DATABASE_PATH
+        database.DATABASE_PATH = Path(self.tmp_dir.name) / "test.sqlite3"
+        database.initialize()
+        database.set_state("admin_telegram_id", "777")
+
+    def tearDown(self):
+        database.DATABASE_PATH = self.original_path
+        self.tmp_dir.cleanup()
+
+    def _init_data(self, user_id, token="123456:sample-test-token"):
+        user = {"id": user_id, "first_name": "User"}
+        values = {"auth_date": "2000000000", "user": json.dumps(user, separators=(",", ":"))}
+        check_string = "\n".join(f"{key}={value}" for key, value in sorted(values.items()))
+        secret_key = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
+        values["hash"] = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
+        return urlencode(values), token
+
+    def _user(self, init_data):
+        from app import main
+
+        return main.require_user(init_data, None)
+
+    def test_owner_gets_owner_role(self):
+        init_data, token = self._init_data(777)
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": token}), \
+             patch("app.auth.time.time", return_value=2000000010):
+            user = self._user(init_data)
+        self.assertEqual(user["role"], "owner")
+
+    def test_stranger_without_invite_is_rejected(self):
+        from fastapi import HTTPException
+
+        init_data, token = self._init_data(888)
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": token}), \
+             patch("app.auth.time.time", return_value=2000000010):
+            with self.assertRaises(HTTPException) as ctx:
+                self._user(init_data)
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_invite_redeem_opens_access(self):
+        from app import main
+
+        init_data, token = self._init_data(888)
+        invite = database.create_invite(max_uses=1)
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": token}), \
+             patch("app.auth.time.time", return_value=2000000010):
+            with self.assertRaises(Exception):
+                self._user(init_data)
+            result = main.redeem_invite(main.InviteRedeemPayload(token=invite["token"]), {"id": 888})
+            self.assertTrue(result["ok"])
+            user = self._user(init_data)
+        self.assertEqual(user["role"], "user")
+
+    def test_invite_single_use_limit(self):
+        init_data1, token = self._init_data(881)
+        init_data2, _ = self._init_data(882)
+        invite = database.create_invite(max_uses=1)
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": token}), \
+             patch("app.auth.time.time", return_value=2000000010):
+            owner = self._owner_user(token)
+            from app import main
+            main.redeem_invite(main.InviteRedeemPayload(token=invite["token"]), {"id": 881})
+            with self.assertRaises(Exception):
+                main.redeem_invite(main.InviteRedeemPayload(token=invite["token"]), {"id": 882})
+
+    def _owner_user(self, token):
+        init_data, _ = self._init_data(777, token)
+        with patch("app.auth.time.time", return_value=2000000010):
+            return self._user(init_data)
+
+    def test_configs_are_isolated_per_user(self):
+        from app import main
+
+        init_data, token = self._init_data(777)
+        invite = database.create_invite()
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": token}), \
+             patch("app.auth.time.time", return_value=2000000010):
+            owner = self._owner_user(token)
+            main.put_config(main.ConfigPayload(sources=["@ownchan"], destinations=["@owndest"]), owner)
+            init_user, _ = self._init_data(889)
+            with self.assertRaises(Exception):
+                self._user(init_user)
+            main.redeem_invite(main.InviteRedeemPayload(token=invite["token"]), {"id": 889})
+            user = self._user(init_user)
+            main.put_config(main.ConfigPayload(sources=["@userchan"], destinations=["@userdest"]), user)
+        owner_config = database.get_config(database.user_key_for(777))
+        user_config = database.get_config(database.user_key_for(889))
+        self.assertEqual(owner_config["sources"], ["ownchan"])
+        self.assertEqual(user_config["sources"], ["userchan"])
+        self.assertEqual(user_config["destinations"], ["@userdest"])
+
+    def test_admin_endpoints_guard_roles(self):
+        from fastapi import HTTPException
+
+        from app import main
+
+        init_data, token = self._init_data(777)
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": token}), \
+             patch("app.auth.time.time", return_value=2000000010):
+            owner = self._owner_user(token)
+            users = main.admin_users(owner)
+            self.assertTrue(any(u["id"] == 777 and u["role"] == "owner" for u in users))
+            invite = main.admin_invite_create(main.InviteCreatePayload(max_uses=2, expires_days=7), owner)
+            self.assertTrue(invite["token"])
+            database.upsert_user(890, "u", "U")
+            main.admin_user_enabled(890, main.UserEnabledPayload(enabled=True), owner)
+            self.assertTrue(database.get_user(890)["enabled"])
+
+    def test_regular_user_cannot_open_admin(self):
+        from fastapi import HTTPException
+
+        from app import main
+
+        init_data, token = self._init_data(777)
+        invite = database.create_invite()
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": token}), \
+             patch("app.auth.time.time", return_value=2000000010):
+            owner = self._owner_user(token)
+            main.redeem_invite(main.InviteRedeemPayload(token=invite["token"]), {"id": 891})
+            init_user, _ = self._init_data(891)
+            user = self._user(init_user)
+            self.assertEqual(user["role"], "user")
+            with self.assertRaises(HTTPException) as ctx:
+                main.require_admin(init_user, None)
+            self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_poll_user_uses_own_cursors(self):
+        from app import worker
+
+        key_a = database.user_key_for(701)
+        key_b = database.user_key_for(702)
+        database.set_cursor("chanone", 5, key_a)
+        self.assertEqual(database.get_cursor("chanone", key_a), 5)
+        self.assertIsNone(database.get_cursor("chanone", key_b))
+
+    def test_regular_user_bot_commands_use_own_config(self):
+        from app import telegram, worker
+
+        database.upsert_user( daily if False else 893, ""u"", "U")
+        database.set_user_enabled(893, True)
+        key = database.user_key_for(893)
+        database.set_config({"sources": [], "destination": "", "destinations": [],
+                             "filter_enabled": False, "filter_terms": "", "filter_mode": "any",
+                             "enabled": False}, key)
+        answers = []
+
+        def fake_bot(method, data=None, files=None, timeout=30):
+            if method == "getUpdates":
+                return [{"update_id": 500, "message": {
+                    "message_id": 90, "text": "/add @userchan",
+                    "chat": {"id": 893, "type": "private"}, "from": {"id": 893}}}]
+            answers.append((data or {}).get("text", ""))
+            return {"message_id": 1}
+
+        with patch.dict(os.environ, {"ADMIN_TELEGRAM_ID": "777"}), \
+             patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "bot_request", side_effect=fake_bot):
+            worker.drain_direct_messages()
+
+        self.assertTrue(any("добавлен" in text for text in answers))
+        self.assertIn("userchan", database.get_config(key)["sources"])
+        self.assertEqual(database.get_config()["sources"], [])
 
 
 class MenuButtonTests(unittest.TestCase):
@@ -967,6 +1135,7 @@ class DirectTests(unittest.TestCase):
             "filter_terms": "", "filter_mode": "any", "enabled": True,
         })
         database.set_state("admin_telegram_id", "777")
+        database.set_config(database.get_config(), database.user_key_for(777))
 
     def tearDown(self):
         from app import database
@@ -1062,6 +1231,7 @@ class BotCommandsTests(unittest.TestCase):
             "filter_terms": "", "filter_mode": "any", "enabled": False,
         })
         database.set_state("admin_telegram_id", "777")
+        database.set_config(database.get_config(), database.user_key_for(777))
 
     def tearDown(self):
         from app import database
@@ -1115,7 +1285,7 @@ class BotCommandsTests(unittest.TestCase):
         self.assertIn("@one убран", answers[2])
         self.assertNotIn("@one", answers[3])
         self.assertIn("@twochan", answers[3])
-        self.assertEqual(database.get_config()["sources"], ["twochan"])
+        self.assertEqual(database.get_config(database.user_key_for(777))["sources"], ["twochan"])
 
     def test_add_rejects_garbage_and_duplicates(self):
         answers = []
@@ -1135,7 +1305,7 @@ class BotCommandsTests(unittest.TestCase):
             return {"message_id": 1}
 
         self._drain(["/dest https://t.me/somechannel"], bot_request)
-        self.assertEqual(database.get_config()["destination"], "@somechannel")
+        self.assertEqual(database.get_config(database.user_key_for(777))["destination"], "@somechannel")
 
     def test_on_off_and_status(self):
         from app import database
@@ -1150,7 +1320,7 @@ class BotCommandsTests(unittest.TestCase):
         self.assertIn("остановлена", answers[0].lower())
         self.assertIn("выключена", answers[1].lower())
         self.assertIn("включена", answers[2].lower())
-        self.assertTrue(database.get_config()["enabled"])
+        self.assertTrue(database.get_config(database.user_key_for(777))["enabled"])
 
     def test_start_sends_mini_app_keyboard(self):
         payloads = []
@@ -1209,10 +1379,10 @@ class BotCommandsTests(unittest.TestCase):
 
         real_handler = worker._handle_private_update
 
-        def flaky(update, owner_id, destination):
+        def flaky(update, owner_id):
             if "message" not in update:
                 raise KeyError("message")
-            return real_handler(update, owner_id, destination)
+            return real_handler(update, owner_id)
 
         with patch.object(telegram, "BOT_TOKEN", "123:test"), \
              patch.object(telegram, "bot_request", side_effect=fake_bot), \
@@ -1285,7 +1455,7 @@ class BotCommandsTests(unittest.TestCase):
         self._drain_texts(["▶️ Запустить", "⏹ Остановить"], bot_request)
         self.assertIn("включена", answers[0].lower())
         self.assertIn("остановлена", answers[1].lower())
-        self.assertFalse(database.get_config()["enabled"])
+        self.assertFalse(database.get_config(database.user_key_for(777))["enabled"])
 
     def test_pending_add_flow_takes_link(self):
         from app import database
@@ -1299,7 +1469,7 @@ class BotCommandsTests(unittest.TestCase):
         self._drain_texts(["➕ Добавить", "https://t.me/newchanname"], bot_request)
         self.assertIn("Пришлите", answers[0])
         self.assertIn("@newchanname добавлен", answers[1])
-        self.assertIn("newchanname", database.get_config()["sources"])
+        self.assertIn("newchanname", database.get_config(database.user_key_for(777))["sources"])
 
     def test_pending_cancelled_by_command(self):
         from app import database
@@ -1313,7 +1483,7 @@ class BotCommandsTests(unittest.TestCase):
         self._drain_texts(["➕ Добавить", "/list"], bot_request)
         self.assertIn("Пришлите", answers[0])
         self.assertIn("Копируемые каналы", answers[1])
-        self.assertNotIn("newchanname", database.get_config()["sources"])
+        self.assertNotIn("newchanname", database.get_config(database.user_key_for(777))["sources"])
 
     def test_signature_button_sets_and_disables(self):
         from app import database
@@ -1344,7 +1514,7 @@ class BotCommandsTests(unittest.TestCase):
         self._drain_texts(["/sig Мой канал", "/sigoff"], bot_request)
         self.assertIn("Подпись включена", answers[0])
         self.assertIn("выключена", answers[1].lower())
-        config = database.get_config()
+        config = database.get_config(database.user_key_for(777))
         self.assertEqual(config["signature_text"], "Мой канал")
         self.assertFalse(config["signature_enabled"])
 

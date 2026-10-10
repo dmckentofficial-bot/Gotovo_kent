@@ -98,7 +98,7 @@
 
         <div id="stats" class="stats"></div>
 
-        <div class="mini-grid">
+        <div class="mini-grid" id="home-bot-grid">
           <div class="mini-card glass">
             <p class="mini-label">ТОКЕН БОТА</p>
             <input id="bot-token" class="mini-input" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="…">
@@ -169,7 +169,7 @@
           <p class="hint">Без фильтра пересылаются все новые посты источников.</p>
         </div>
 
-        <div class="card">
+        <div class="card" id="settings-access-card">
           <p class="eyebrow">БЕЗОПАСНОСТЬ</p>
           <h2 class="section-title">Пароль доступа</h2>
           <p class="hint">Создаётся при первом входе из браузера. Нужен, чтобы управлять пересылкой без Telegram. От 4 до 8 цифр.</p>
@@ -178,7 +178,7 @@
           </div>
         </div>
 
-        <div class="card">
+        <div class="card" id="settings-mt-card">
           <p class="eyebrow">ТОЧНОЕ ЧТЕНИЕ</p>
           <h2 class="section-title">MTProto-режим</h2>
           <p class="hint" id="mt-status-hint">Обычное чтение видит только текст и фото из превью. Подключите свой Telegram — и посты будут забираться дословно: форматирование, кнопки, опросы, все медиа в оригинале.</p>
@@ -252,6 +252,34 @@
           <button id="signature-save" class="button primary" type="button">Сохранить подпись</button>
         </div>
       </section>
+
+      <section class="screen" data-screen="admin" hidden>
+        <div class="card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">АДМИН</p>
+              <h2 class="section-title">Пользователи</h2>
+            </div>
+            <button id="admin-refresh" class="icon-button" type="button" aria-label="Обновить">↻</button>
+          </div>
+          <p class="hint">Обычные пользователи видят только свои каналы и историю. Отключение останавливает их пересылку.</p>
+          <div id="admin-users" class="history-list"></div>
+        </div>
+
+        <div class="card">
+          <p class="eyebrow">АДМИН</p>
+          <h2 class="section-title">Ссылки-приглашения</h2>
+          <p class="hint">Отправьте ссылку человеку — открыв её в Telegram, он получит обычный доступ без прав админа.</p>
+          <label class="field-label" for="invite-max">Сколько раз можно войти</label>
+          <input id="invite-max" class="text-input" type="text" inputmode="numeric" autocomplete="off" placeholder="0 — без ограничения">
+          <label class="field-label" for="invite-days">Срок действия, дней (0 — бессрочно)</label>
+          <input id="invite-days" class="text-input" type="text" inputmode="numeric" autocomplete="off" placeholder="0">
+          <div class="button-row">
+            <button id="invite-create" class="button primary" type="button">Создать ссылку</button>
+          </div>
+          <div id="invites-list" class="history-list"></div>
+        </div>
+      </section>
     </main>
 
     <nav class="tabbar glass" aria-label="Разделы">
@@ -266,6 +294,10 @@
       <button class="tab" type="button" data-tab="signature">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20c3-1 5-3 8-8s5-7 8-7"/><path d="M4 20h5"/></svg>
         <span>Подпись</span>
+      </button>
+      <button class="tab" type="button" data-tab="admin" id="tab-admin" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7z"/></svg>
+        <span>Админ</span>
       </button>
     </nav>
   </div>

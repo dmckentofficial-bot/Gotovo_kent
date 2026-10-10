@@ -76,9 +76,9 @@ def set_app_url(url):
     return clean
 
 
-def _main_keyboard():
+def _main_keyboard(user_key=None):
     """Полное меню как в Mini App (без нижней кнопки приложения — она сбоку)."""
-    config = database.get_config()
+    config = database.get_config(user_key)
     toggle = BTN_STOP if config.get("enabled") else BTN_RUN
     rows = [
         [{"text": toggle}, {"text": BTN_SIGN}],
@@ -90,11 +90,11 @@ def _main_keyboard():
     return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
 
 
-def _answer_private(chat_id, text, keyboard=False):
+def _answer_private(chat_id, text, keyboard=False, user_key=None):
     try:
         payload = {"chat_id": chat_id, "text": text}
         if keyboard:
-            payload["reply_markup"] = json.dumps(_main_keyboard())
+            payload["reply_markup"] = json.dumps(_main_keyboard(user_key))
         telegram.bot_request("sendMessage", payload, timeout=30)
         database.set_state("bot_answers_sent", str(int(database.get_state("bot_answers_sent", "0") or 0) + 1))
     except RuntimeError as exc:
@@ -134,22 +134,22 @@ PENDING_ASK = {
 }
 
 
-def _consume_pending(action, argument):
+def _consume_pending(action, argument, user_key=None):
     if action == "add":
-        return _cmd_add(argument)
+        return _cmd_add(argument, user_key)
     if action == "del":
-        return _cmd_delete(argument)
+        return _cmd_delete(argument, user_key)
     if action == "dest":
-        return _cmd_destination(argument)
+        return _cmd_destination(argument, user_key)
     if action == "mydest":
-        return _cmd_my_destination(argument)
+        return _cmd_my_destination(argument, user_key)
     if action == "sig":
-        return _cmd_signature_set(argument)
+        return _cmd_signature_set(argument, user_key)
     return ""
 
 
-def _my_channels_text():
-    config = database.get_config()
+def _my_channels_text(user_key=None):
+    config = database.get_config(user_key)
     destinations = list(config.get("destinations") or [])
     if not destinations and config.get("destination"):
         destinations = [config["destination"]]
@@ -161,15 +161,15 @@ def _my_channels_text():
     return "\n".join(lines)
 
 
-def _save_sources(sources):
-    config = database.get_config()
+def _save_sources(sources, user_key=None):
+    config = database.get_config(user_key)
     config["sources"] = sources
-    database.set_config(config)
+    database.set_config(config, user_key)
     return config
 
 
-def _cmd_status():
-    config = database.get_config()
+def _cmd_status(user_key=None):
+    config = database.get_config(user_key)
     state = "включена" if config.get("enabled") else "выключена"
     last_error = database.get_state("last_error", "")
     destinations = list(config.get("destinations") or [])
@@ -187,8 +187,8 @@ def _cmd_status():
     return "\n".join(lines)
 
 
-def _cmd_stats():
-    stats = database.history_stats()
+def _cmd_stats(user_key=None):
+    stats = database.history_stats(user_key)
     return (
         f"Переслано: {stats['forwarded']}\n"
         f"Отфильтровано: {stats['filtered']}\n"
@@ -206,8 +206,8 @@ SIGNATURE_ASK = (
 )
 
 
-def _signature_state_text():
-    config = database.get_config()
+def _signature_state_text(user_key=None):
+    config = database.get_config(user_key)
     if not config.get("signature_enabled"):
         return "Подпись выключена. Пришлите текст — включу и добавлю к постам."
     text = (config.get("signature_text") or "").strip()
@@ -215,7 +215,7 @@ def _signature_state_text():
     return f"Подпись включена:\n{shown}\n\nПришлите новый текст, чтобы сменить, или «выкл»."
 
 
-def _cmd_signature_set(argument):
+def _cmd_signature_set(argument, user_key=None):
     text = (argument or "").strip()
     if not text:
         return "Использование: /sig текст подписи."
@@ -223,31 +223,31 @@ def _cmd_signature_set(argument):
         return _cmd_signature_off()
     if len(text) > 1000:
         return "Подпись слишком длинная (максимум 1000 символов)."
-    config = database.get_config()
+    config = database.get_config(user_key)
     config["signature_enabled"] = True
     config["signature_text"] = text
-    database.set_config(config)
+    database.set_config(config, user_key)
     return "Подпись включена — теперь добавляется к каждому посту."
 
 
-def _cmd_signature_off():
-    config = database.get_config()
+def _cmd_signature_off(user_key=None):
+    config = database.get_config(user_key)
     config["signature_enabled"] = False
-    database.set_config(config)
+    database.set_config(config, user_key)
     return "Подпись выключена."
 
 
-def _cmd_set_enabled(enabled):
-    config = database.get_config()
+def _cmd_set_enabled(enabled, user_key=None):
+    config = database.get_config(user_key)
     if enabled and (not config.get("sources") or not (config.get("destinations") or config.get("destination"))):
         return "Сначала задайте источники и хотя бы один свой канал: /add, /mydest."
     config["enabled"] = enabled
-    database.set_config(config)
+    database.set_config(config, user_key)
     return "Пересылка включена." if enabled else "Пересылка остановлена."
 
 
-def _cmd_list():
-    config = database.get_config()
+def _cmd_list(user_key=None):
+    config = database.get_config(user_key)
     sources = config.get("sources") or []
     destinations = list(config.get("destinations") or [])
     if not destinations and config.get("destination"):
@@ -263,10 +263,10 @@ def _cmd_list():
     return "\n".join(lines)
 
 
-def _cmd_add(argument):
+def _cmd_add(argument, user_key=None):
     if not argument:
         return "Использование: /add @канал или ссылку t.me."
-    config = database.get_config()
+    config = database.get_config(user_key)
     sources = list(config.get("sources") or [])
     raw = argument.strip().lstrip("@").casefold()
     if raw in {value.casefold() for value in sources}:
@@ -280,21 +280,21 @@ def _cmd_add(argument):
     if len(sources) >= MAX_SOURCES:
         return f"Больше {MAX_SOURCES} источников нельзя."
     sources.append(username)
-    _save_sources(sources)
+    _save_sources(sources, user_key)
     return f"@{username} добавлен. Всего: {len(sources)}."
 
 
-def _cmd_delete(argument):
+def _cmd_delete(argument, user_key=None):
     if not argument:
         return "Использование: /del @канал или номер из /list."
-    config = database.get_config()
+    config = database.get_config(user_key)
     sources = list(config.get("sources") or [])
     target = argument.strip()
     if target.isdigit():
         index = int(target) - 1
         if 0 <= index < len(sources):
             removed = sources.pop(index)
-            _save_sources(sources)
+            _save_sources(sources, user_key)
             return f"@{removed} убран."
         return "Нет источника с таким номером."
     try:
@@ -304,33 +304,33 @@ def _cmd_delete(argument):
     for value in sources:
         if value.casefold() == username.casefold():
             sources.remove(value)
-            _save_sources(sources)
+            _save_sources(sources, user_key)
             return f"@{username} убран."
     return f"@{username} нет в списке."
 
 
-def _cmd_destination(argument):
+def _cmd_destination(argument, user_key=None):
     if not argument:
         return "Использование: /dest @канал или ссылку t.me."
     try:
         destination = telegram.normalize_destination(argument)
     except ValueError as exc:
         return str(exc)
-    config = database.get_config()
+    config = database.get_config(user_key)
     config["destination"] = destination
     config["destinations"] = [destination]
-    database.set_config(config)
+    database.set_config(config, user_key)
     return f"Свои каналы заменены одним: {destination}."
 
 
-def _cmd_my_destination(argument):
+def _cmd_my_destination(argument, user_key=None):
     if not argument:
         return "Использование: /mydest @канал или ссылку t.me."
     try:
         destination = telegram.normalize_destination(argument)
     except ValueError as exc:
         return str(exc)
-    config = database.get_config()
+    config = database.get_config(user_key)
     destinations = list(config.get("destinations") or [])
     if not destinations and config.get("destination"):
         destinations = [config["destination"]]
@@ -341,14 +341,14 @@ def _cmd_my_destination(argument):
     destinations.append(destination)
     config["destination"] = destinations[0]
     config["destinations"] = destinations
-    database.set_config(config)
+    database.set_config(config, user_key)
     return f"{destination} добавлен. Всего: {len(destinations)}."
 
 
-def _cmd_delete_destination(argument):
+def _cmd_delete_destination(argument, user_key=None):
     if not argument:
         return "Использование: /delm @канал или номер из /list."
-    config = database.get_config()
+    config = database.get_config(user_key)
     destinations = list(config.get("destinations") or [])
     if not destinations and config.get("destination"):
         destinations = [config["destination"]]
@@ -359,7 +359,7 @@ def _cmd_delete_destination(argument):
             removed = destinations.pop(index)
             config["destination"] = destinations[0] if destinations else ""
             config["destinations"] = destinations
-            database.set_config(config)
+            database.set_config(config, user_key)
             return f"{removed} убран."
         return "Нет своего канала с таким номером."
     try:
@@ -371,14 +371,14 @@ def _cmd_delete_destination(argument):
             destinations.remove(value)
             config["destination"] = destinations[0] if destinations else ""
             config["destinations"] = destinations
-            database.set_config(config)
+            database.set_config(config, user_key)
             return f"{username} убран."
     return f"{username} нет в списке."
 
 
-def _cmd_test():
+def _cmd_test(user_key=None):
     try:
-        result = validate_configuration()
+        result = validate_configuration(database.get_config(user_key))
     except (RuntimeError, ValueError) as exc:
         return f"Проверка не пройдена: {exc}"
     lines = [f"Бот: @{result.get('bot')}", f"Назначение: {result.get('destination')}"]
@@ -387,26 +387,26 @@ def _cmd_test():
     return "\n".join(lines)
 
 
-def _handle_owner_command(text):
+def _handle_owner_command(text, user_key=None):
     """Команда владельца -> текст ответа (пусто = не команда)."""
     parts = text.strip().split(None, 1)
     command = parts[0].split("@")[0].lower()
     argument = parts[1].strip() if len(parts) > 1 else ""
     handlers = {
         "/help": lambda: HELP_TEXT,
-        "/status": _cmd_status,
-        "/stats": _cmd_stats,
-        "/on": lambda: _cmd_set_enabled(True),
-        "/off": lambda: _cmd_set_enabled(False),
-        "/sig": lambda: _cmd_signature_set(argument),
-        "/sigoff": lambda: _cmd_signature_off(),
-        "/list": _cmd_list,
-        "/add": lambda: _cmd_add(argument),
-        "/del": lambda: _cmd_delete(argument),
-        "/dest": lambda: _cmd_destination(argument),
-        "/mydest": lambda: _cmd_my_destination(argument),
-        "/delm": lambda: _cmd_delete_destination(argument),
-        "/test": _cmd_test,
+        "/status": lambda: _cmd_status(user_key),
+        "/stats": lambda: _cmd_stats(user_key),
+        "/on": lambda: _cmd_set_enabled(True, user_key),
+        "/off": lambda: _cmd_set_enabled(False, user_key),
+        "/sig": lambda: _cmd_signature_set(argument, user_key),
+        "/sigoff": lambda: _cmd_signature_off(user_key),
+        "/list": lambda: _cmd_list(user_key),
+        "/add": lambda: _cmd_add(argument, user_key),
+        "/del": lambda: _cmd_delete(argument, user_key),
+        "/dest": lambda: _cmd_destination(argument, user_key),
+        "/mydest": lambda: _cmd_my_destination(argument, user_key),
+        "/delm": lambda: _cmd_delete_destination(argument, user_key),
+        "/test": lambda: _cmd_test(user_key),
     }
     handler = handlers.get(command)
     return handler() if handler else ""
@@ -425,29 +425,13 @@ def _direct_media_label(message):
 
 
 def drain_direct_messages():
-    """Режим «бот-приёмник»: пересланное владельцем в личку — 1-в-1 в канал.
+    """Приёмник лички: своё — владельцу и допущенным в их каналы.
 
-    Бот уже держит сообщение (его переслали ему), поэтому copyMessage идёт
-    серверными file_id: оригиналы фото/видео, entities, кнопки — без потерь
-    и без лимита 49 МБ на скачивание. Чужие сообщения игнорируются.
+    Пересланное боту копируется серверными file_id: оригиналы фото/видео,
+    entities, кнопки — без потерь и без лимита 49 МБ. Владелец управляет
+    всем, обычные пользователи — только своим (команды те же, данные свои).
     """
     if not telegram.get_bot_token():
-        return
-    config = database.get_config()
-    raw_destinations = list(config.get("destinations") or [])
-    if not raw_destinations and config.get("destination"):
-        raw_destinations = [config["destination"]]
-    if not raw_destinations:
-        return
-    destinations = []
-    for destination in raw_destinations:
-        try:
-            normalized = telegram.normalize_destination(destination)
-        except ValueError:
-            continue
-        if normalized.casefold() not in {value.casefold() for value in destinations}:
-            destinations.append(normalized)
-    if not destinations:
         return
     owner_id = _owner_id()
 
@@ -471,13 +455,53 @@ def drain_direct_messages():
             continue
         database.set_state("bot_updates_offset", update_id + 1)
         try:
-            _handle_private_update(update, owner_id, destinations)
+            _handle_private_update(update, owner_id)
         except Exception as exc:
             # Одно битое обновление не должно ронять весь приёмник.
             database.set_state("bot_answer_error", f"update {update_id}: {type(exc).__name__}: {exc}"[:300])
 
 
-def _handle_private_update(update, owner_id, destinations):
+HELP_USER = (
+    "Перешлите мне любой пост — опубликую его в ваши каналы один в один.\n\n"
+    "Команды:\n"
+    "/status — состояние\n"
+    "/stats — счётчики\n"
+    "/on и /off — включить/выключить\n"
+    "/list — ваши каналы\n"
+    "/add, /del, /dest, /mydest, /delm — каналы\n"
+    "/sig, /sigoff — подпись\n"
+    "/test — проверка\n"
+    "/id — ваш Telegram ID"
+)
+
+
+def _sender_context(sender_id, owner_id):
+    """(user_key, is_owner) для отправителя; None-ключ = чужой/отключён."""
+    if owner_id is not None and sender_id == owner_id:
+        return database.user_key_for(owner_id), True
+    user = database.get_user(sender_id) if sender_id else None
+    if user and user["enabled"]:
+        return database.user_key_for(sender_id), user["role"] == "owner"
+    return None, False
+
+
+def _destinations_of(user_key):
+    config = database.get_config(user_key)
+    raw = list(config.get("destinations") or [])
+    if not raw and config.get("destination"):
+        raw = [config["destination"]]
+    normalized = []
+    for destination in raw:
+        try:
+            value = telegram.normalize_destination(destination)
+        except ValueError:
+            continue
+        if value.casefold() not in {item.casefold() for item in normalized}:
+            normalized.append(value)
+    return normalized
+
+
+def _handle_private_update(update, owner_id):
     message = update.get("message") or {}
     chat = message.get("chat") or {}
     sender = message.get("from") or {}
@@ -486,48 +510,51 @@ def _handle_private_update(update, owner_id, destinations):
         return
     text = message.get("text", "")
     if text.startswith("/start"):
-        _answer_private(chat.get("id"), HELP_TEXT, keyboard="main")
+        key, is_owner = _sender_context(sender.get("id"), owner_id)
+        _answer_private(chat.get("id"), HELP_TEXT if is_owner else HELP_USER, keyboard="main", user_key=key)
         return
     if text.startswith("/id"):
         _answer_private(chat.get("id"), f"Ваш Telegram ID: {sender.get('id')}")
         return
-    if owner_id is not None and sender.get("id") != owner_id:
+    user_key, _ = _sender_context(sender.get("id"), owner_id)
+    if not user_key:
         return
+    destinations = _destinations_of(user_key)
     if text in (BTN_RUN, BTN_STOP, BTN_SIGN, BTN_STATS, BTN_LIST, BTN_MY,
                 BTN_TEST, BTN_HELP, BTN_ADD, BTN_DEL):
         _clear_pending()
         if text == BTN_RUN:
-            _answer_private(chat.get("id"), _cmd_set_enabled(True), keyboard="main")
+            _answer_private(chat.get("id"), _cmd_set_enabled(True, user_key), keyboard="main", user_key=user_key)
         elif text == BTN_STOP:
-            _answer_private(chat.get("id"), _cmd_set_enabled(False), keyboard="main")
+            _answer_private(chat.get("id"), _cmd_set_enabled(False, user_key), keyboard="main", user_key=user_key)
         elif text == BTN_SIGN:
-            _answer_private(chat.get("id"), _signature_state_text(), keyboard="main")
+            _answer_private(chat.get("id"), _signature_state_text(user_key), keyboard="main", user_key=user_key)
             _set_pending(chat.get("id"), "sig")
         elif text == BTN_STATS:
-            _answer_private(chat.get("id"), _cmd_stats(), keyboard="main")
+            _answer_private(chat.get("id"), _cmd_stats(user_key), keyboard="main", user_key=user_key)
         elif text == BTN_LIST:
-            _answer_private(chat.get("id"), _cmd_list(), keyboard="main")
+            _answer_private(chat.get("id"), _cmd_list(user_key), keyboard="main", user_key=user_key)
         elif text == BTN_MY:
-            _answer_private(chat.get("id"), _my_channels_text(), keyboard="main")
+            _answer_private(chat.get("id"), _my_channels_text(user_key), keyboard="main", user_key=user_key)
             _set_pending(chat.get("id"), "mydest")
         elif text == BTN_TEST:
-            _answer_private(chat.get("id"), _cmd_test(), keyboard="main")
+            _answer_private(chat.get("id"), _cmd_test(user_key), keyboard="main", user_key=user_key)
         elif text == BTN_HELP:
-            _answer_private(chat.get("id"), HELP_TEXT, keyboard="main")
+            _answer_private(chat.get("id"), HELP_TEXT, keyboard="main", user_key=user_key)
         else:
             action = "add" if text == BTN_ADD else "del"
             _set_pending(chat.get("id"), action)
-            _answer_private(chat.get("id"), PENDING_ASK[action], keyboard="main")
+            _answer_private(chat.get("id"), PENDING_ASK[action], keyboard="main", user_key=user_key)
         return
     if text.startswith("/"):
         _clear_pending()
-        answer = _handle_owner_command(text)
+        answer = _handle_owner_command(text, user_key)
         if answer:
-            _answer_private(chat.get("id"), answer, keyboard="main")
+            _answer_private(chat.get("id"), answer, keyboard="main", user_key=user_key)
         return
     pending_action = _take_pending(chat.get("id"))
     if pending_action:
-        _answer_private(chat.get("id"), _consume_pending(pending_action, text), keyboard="main")
+        _answer_private(chat.get("id"), _consume_pending(pending_action, text, user_key), keyboard="main", user_key=user_key)
         return
     preview = {
         "id": str(message_id),
@@ -541,7 +568,7 @@ def _handle_private_update(update, owner_id, destinations):
                 {"chat_id": destination, "from_chat_id": chat.get("id"), "message_id": message_id},
                 timeout=30,
             )
-            database.write_history(preview, DIRECT_SOURCE, "forwarded", "", destination)
+            database.write_history(preview, DIRECT_SOURCE, "forwarded", "", destination, user_key or "")
         except RuntimeError:
             try:
                 telegram.bot_request(
@@ -549,9 +576,29 @@ def _handle_private_update(update, owner_id, destinations):
                     {"chat_id": destination, "from_chat_id": chat.get("id"), "message_id": message_id},
                     timeout=30,
                 )
-                database.write_history(preview, DIRECT_SOURCE, "forwarded", "Скопировать не вышло — переслано с меткой.", destination)
+                database.write_history(preview, DIRECT_SOURCE, "forwarded", "Скопировать не вышло — переслано с меткой.", destination, user_key or "")
             except RuntimeError as exc:
-                database.write_history(preview, DIRECT_SOURCE, "error", str(exc), destination)
+                database.write_history(preview, DIRECT_SOURCE, "error", str(exc), destination, user_key or "")
+
+
+def _poll_targets():
+    """Ключи пользователей для опроса: владелец + включённые по инвайту."""
+    raw = (database.get_state("admin_telegram_id", "") or os.environ.get("ADMIN_TELEGRAM_ID", "")).strip()
+    keys = []
+    try:
+        user_key = database.user_key_for(int(raw))
+        keys.append(user_key)
+    except (TypeError, ValueError):
+        pass
+    for user in database.list_users():
+        if user["role"] == "owner" or not user["enabled"]:
+            continue
+        key = database.user_key_for(user["user_id"])
+        if key not in keys:
+            keys.append(key)
+    if not keys:
+        keys.append(None)
+    return keys
 
 
 def run(stop_event):
@@ -560,10 +607,18 @@ def run(stop_event):
     tick = 0
     while not stop_event.is_set():
         if tick % POLL_EVERY_N_TICKS == 0:
+            for key in _poll_targets():
+                try:
+                    poll_user(key)
+                except Exception as exc:
+                    database.set_state(
+                        database.user_state_key(key, "last_error") if key else "last_error",
+                        f"Ошибка цикла пересылки ({type(exc).__name__}).",
+                    )
             try:
-                poll_once()
-            except Exception as exc:
-                database.set_state("last_error", f"Ошибка цикла пересылки ({type(exc).__name__}).")
+                database.set_state("last_checked", int(time.time()))
+            except Exception:  # noqa: BLE001
+                pass
         try:
             drain_direct_messages()
         except Exception as exc:
@@ -587,18 +642,28 @@ def _matches_filter(text, config):
     return all(matches) if config.get("filter_mode") == "all" else any(matches)
 
 
-def poll_once():
-    config = database.get_config()
-    database.set_state("last_error", "")
+def _ustate(user_key, name):
+    if user_key:
+        return database.user_state_key(user_key, name)
+    return name
+
+
+def poll_once(user_key=None):
+    poll_user(user_key)
+
+
+def poll_user(user_key):
+    config = database.get_config(user_key)
+    database.set_state(_ustate(user_key, "last_error"), "")
     if not telegram.get_bot_token():
-        database.set_state("last_error", "На сервере не задан токен бота.")
+        database.set_state(_ustate(user_key, "last_error"), "На сервере не задан токен бота.")
         return
     if not config.get("enabled"):
-        database.set_state("last_checked", int(time.time()))
+        database.set_state(_ustate(user_key, "last_checked"), int(time.time()))
         return
     if not config["sources"] or not (config.get("destinations") or config.get("destination")):
-        database.set_state("last_error", "")
-        database.set_state("last_checked", int(time.time()))
+        database.set_state(_ustate(user_key, "last_error"), "")
+        database.set_state(_ustate(user_key, "last_checked"), int(time.time()))
         return
 
     signature = config.get("signature_text", "").strip() if config.get("signature_enabled") else ""
@@ -611,13 +676,13 @@ def poll_once():
         try:
             normalized = telegram.normalize_destination(destination)
         except ValueError as exc:
-            database.set_state("last_error", f"Канал назначения {destination}: {exc}")
+            database.set_state(_ustate(user_key, "last_error"), f"Канал назначения {destination}: {exc}")
             return
         if normalized.casefold() not in {value.casefold() for value in normalized_destinations}:
             normalized_destinations.append(normalized)
     if not normalized_destinations:
-        database.set_state("last_error", "")
-        database.set_state("last_checked", int(time.time()))
+        database.set_state(_ustate(user_key, "last_error"), "")
+        database.set_state(_ustate(user_key, "last_checked"), int(time.time()))
         return
 
     use_exact = False
@@ -633,19 +698,19 @@ def poll_once():
                 try:
                     posts = mt_reader.fetch_recent(source, limit=20)
                     exact_mode = True
-                    database.set_state("mt_last_ok", int(time.time()))
+                    database.set_state(_ustate(user_key, "mt_last_ok"), int(time.time()))
                 except Exception as exc:
                     note = f"@{source}: точное чтение недоступно ({exc}), читаю превью."
-                    database.set_state("last_error", note)
+                    database.set_state(_ustate(user_key, "last_error"), note)
                     posts = telegram.fetch_public_posts(source)
                     exact_mode = False
             else:
                 posts = telegram.fetch_public_posts(source)
                 exact_mode = False
-            cursor = database.get_cursor(source)
+            cursor = database.get_cursor(source, user_key)
             if cursor is None:
                 latest_id = max(int(post["id"]) for post in posts)
-                database.set_cursor(source, latest_id)
+                database.set_cursor(source, latest_id, user_key)
                 continue
 
             new_posts = sorted(
@@ -660,8 +725,8 @@ def poll_once():
             for post in new_posts:
                 post_id = int(post["id"])
                 member_ids = [post["id"], *(post.get("_mt_group_ids") or [])]
-                if any(database.already_forwarded(source, member) for member in member_ids):
-                    database.set_cursor(source, post_id)
+                if any(database.already_forwarded(source, member, user_key=user_key) for member in member_ids):
+                    database.set_cursor(source, post_id, user_key)
                     continue
                 if not exact_mode:
                     # Для точного фильтра догружаем полный текст отдельного поста:
@@ -687,20 +752,21 @@ def poll_once():
                                 item["data"] = blob
                                 item["filename"] = filename
                     except Exception as exc:
-                        database.write_history(post, source, "error", f"Не удалось скачать медиа: {exc}")
-                        database.set_state("last_error", f"@{source}, пост {post_id}: {exc}")
+                        database.write_history(post, source, "error", f"Не удалось скачать медиа: {exc}", user_key=user_key or "")
+                        database.set_state(_ustate(user_key, "last_error"), f"@{source}, пост {post_id}: {exc}")
                         break
                 if not _matches_filter(post.get("text", ""), config):
-                    database.write_history(post, source, "filtered")
-                    database.set_cursor(source, post_id)
+                    database.write_history(post, source, "filtered", user_key=user_key or "")
+                    database.set_cursor(source, post_id, user_key)
                     continue
                 if not post.get("text", "").strip() and not post.get("media"):
                     # Пост без текста и медиа (стикер, гео, дайс и т.п.):
                     # пересылать нечего, очередь не блокируем.
                     database.write_history(
-                        post, source, "skipped", "Нет текста и медиа для пересылки."
+                        post, source, "skipped", "Нет текста и медиа для пересылки.",
+                        user_key=user_key or "",
                     )
-                    database.set_cursor(source, post_id)
+                    database.set_cursor(source, post_id, user_key)
                     continue
                 try:
                     # Добавляем source_username для copyMessage
@@ -708,40 +774,41 @@ def poll_once():
                     errors = []
                     delivered = False
                     for destination in normalized_destinations:
-                        if database.already_forwarded(source, post.get("id", ""), destination):
+                        if database.already_forwarded(source, post.get("id", ""), destination, user_key=user_key):
                             delivered = True
                             continue
                         try:
                             if telegram.publish_post(post, destination, signature):
-                                database.write_history(post, source, "forwarded", "", destination)
+                                database.write_history(post, source, "forwarded", "", destination, user_key or "")
                             else:
                                 database.write_history(
                                     post, source, "skipped", "Пустой пост без поддерживаемого медиа.", destination
                                 )
                             delivered = True
                         except (RuntimeError, ValueError) as exc:
-                            database.write_history(post, source, "error", str(exc), destination)
+                            database.write_history(post, source, "error", str(exc), destination, user_key or "")
                             errors.append(f"{destination}: {exc}")
-                    database.set_cursor(source, post_id)
+                    database.set_cursor(source, post_id, user_key)
                     if not delivered and errors:
                         database.set_state("last_error", f"@{source}, пост {post_id}: {'; '.join(errors)}")
                         break
                 except (RuntimeError, ValueError) as exc:
                     database.write_history(post, source, "error", str(exc))
-                    database.set_state("last_error", f"@{source}, пост {post_id}: {exc}")
+                    database.set_state(_ustate(user_key, "last_error"), f"@{source}, пост {post_id}: {exc}")
                     break
         except RuntimeError as exc:
             # Пустой канал — не ошибка, просто нечего забирать.
             if "не найдено доступных публикаций" in str(exc):
                 continue
-            database.set_state("last_error", f"@{source}: {exc}")
+            database.set_state(_ustate(user_key, "last_error"), f"@{source}: {exc}")
         except Exception as exc:
-            database.set_state("last_error", f"@{source}: непредвиденная ошибка ({type(exc).__name__}).")
+            database.set_state(_ustate(user_key, "last_error"), f"@{source}: непредвиденная ошибка ({type(exc).__name__}).")
     database.set_state("last_checked", int(time.time()))
 
 
-def validate_configuration():
-    config = database.get_config()
+def validate_configuration(config=None):
+    if config is None:
+        config = database.get_config()
     if not telegram.get_bot_token():
         raise RuntimeError("На сервере не задан TELEGRAM_BOT_TOKEN.")
     if not config["sources"]:

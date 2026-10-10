@@ -87,11 +87,23 @@
     pinError: $("#pin-error"),
     pinPad: $("#pin-pad"),
     pinCancel: $("#pin-cancel"),
+    // admin panel
+    tabAdmin: $("#tab-admin"),
+    adminUsers: $("#admin-users"),
+    adminRefresh: $("#admin-refresh"),
+    inviteMax: $("#invite-max"),
+    inviteDays: $("#invite-days"),
+    inviteCreate: $("#invite-create"),
+    invitesList: $("#invites-list"),
+    homeBotGrid: $("#home-bot-grid"),
+    settingsAccessCard: $("#settings-access-card"),
+    settingsMtCard: $("#settings-mt-card"),
   };
 
   let config = { sources: [], destination: "", destinations: [], filter_enabled: false, filter_terms: "", filter_mode: "any", signature_enabled: false, signature_text: "" };
   let pinConfigured = false;
   let pinUnlocked = false;
+  let myRole = "user";
 
   const ADMIN_KEY_STORAGE = "fwd_admin_key";
   let adminKey = "";
@@ -200,6 +212,11 @@
     }
     if (key === "api/pin/status") return { enabled: DEMOSTATE.pinEnabled };
     if (key.startsWith("api/pin/")) return { ok: true, enabled: DEMOSTATE.pinEnabled };
+    if (key === "api/me") return { id: 123456, username: "demo", first_name: "Демо", role: "owner" };
+    if (key === "api/admin/users") return [];
+    if (key === "api/admin/invites") return [];
+    if (key === "api/mt/status") return { configured: false, connected: false, authorized: false };
+    if (key === "api/bot") return { bot_username: "demo_forwarder_bot", admin_id: "123456", token_set: true, token_hint: "…demo" };
     return {};
   }
 
@@ -1086,6 +1103,165 @@
     if (password) showNotice("Пароль доступа изменён.", "success");
   });
 
+  /* ---------- роли: владелец и обычные пользователи ---------- */
+  function applyRole(role) {
+    myRole = role === "owner" ? "owner" : "user";
+    const isOwner = myRole === "owner";
+    if (nodes.tabAdmin) nodes.tabAdmin.hidden = !isOwner;
+    if (nodes.homeBotGrid) nodes.homeBotGrid.hidden = !isOwner;
+    if (nodes.botSave) nodes.botSave.hidden = !isOwner;
+    if (nodes.settingsAccessCard) nodes.settingsAccessCard.hidden = !isOwner;
+    if (nodes.settingsMtCard) nodes.settingsMtCard.hidden = !isOwner;
+    if (!isOwner) activateTab("home");
+  }
+
+  function inviteLink(token) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("invite", token);
+    return url.toString();
+  }
+
+  async function loadAdminPanel() {
+    if (myRole !== "owner") return;
+    let users = [];
+    try { users = await api("/api/admin/users"); } catch (_) { users = []; }
+    nodes.adminUsers.replaceChildren();
+    if (!users.length) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = "Пока только вы.";
+      nodes.adminUsers.append(empty);
+    }
+    for (const user of users) {
+      const card = document.createElement("div");
+      card.className = "history-item";
+      const name = user.first_name || user.username ? `@${user.username}` : `ID ${user.id}`;
+      const head = document.createElement("div");
+      head.className = "history-meta";
+      const title = document.createElement("span");
+      title.textContent = `${user.role === "owner" ? "👑 " : ""}${name} · постов: ${user.forwarded}, ошибок: ${user.errors}`;
+      head.append(title);
+      card.append(head);
+      const sub = document.createElement("p");
+      sub.className = "history-message";
+      sub.textContent = `Источников: ${user.sources}, своих каналов: ${user.destinations}, пересылка ${user.forwarding ? "включена" : "выключена"}${user.last_error ? `, ошибка: ${user.last_error}` : ""}`;
+      card.append(sub);
+      if (user.role !== "owner") {
+        const row = document.createElement("div");
+        row.className = "button-row";
+        const toggle = document.createElement("button");
+        toggle.className = "button secondary";
+        toggle.type = "button";
+        toggle.textContent = user.enabled ? "Отключить" : "Включить";
+        toggle.addEventListener("click", async () => {
+          haptic("light");
+          try {
+            await api(`/api/admin/users/${user.id}/enabled`, {
+              method: "PUT", body: JSON.stringify({ enabled: !user.enabled }),
+            });
+            showNotice(user.enabled ? "Пользователь отключён." : "Пользователь включён.", "success");
+            await loadAdminPanel();
+          } catch (error) { showNotice(error.message, "error"); }
+        });
+        const remove = document.createElement("button");
+        remove.className = "button danger";
+        remove.type = "button";
+        remove.textContent = "Удалить";
+        remove.addEventListener("click", async () => {
+          haptic("light");
+          const confirmed = await askConfirm({
+            title: "Удалить пользователя?",
+            message: "Его настройки и курсоры удалятся, история останется.",
+            okLabel: "Удалить",
+            danger: true,
+          });
+          if (!confirmed) return;
+          try {
+            await api(`/api/admin/users/${user.id}`, { method: "DELETE" });
+            showNotice("Пользователь удалён.", "success");
+            await loadAdminPanel();
+          } catch (error) { showNotice(error.message, "error"); }
+        });
+        row.append(toggle, remove);
+        card.append(row);
+      }
+      nodes.adminUsers.append(card);
+    }
+    let invites = [];
+    try { invites = await api("/api/admin/invites"); } catch (_) { invites = []; }
+    nodes.invitesList.replaceChildren();
+    for (const invite of invites) {
+      const card = document.createElement("div");
+      card.className = "history-item";
+      const head = document.createElement("div");
+      head.className = "history-meta";
+      const title = document.createElement("span");
+      const left = invite.max_uses ? `${invite.uses}/${invite.max_uses}` : `${invite.uses}/∞`;
+      title.textContent = `${invite.revoked ? "⛔ " : ""}Использований: ${left}${invite.expires_at ? ` · до ${invite.expires_at.slice(0, 10)}` : ""}`;
+      head.append(title);
+      card.append(head);
+      const link = document.createElement("p");
+      link.className = "history-message";
+      link.textContent = inviteLink(invite.token);
+      link.style.wordBreak = "break-all";
+      card.append(link);
+      const row = document.createElement("div");
+      row.className = "button-row";
+      const copy = document.createElement("button");
+      copy.className = "button secondary";
+      copy.type = "button";
+      copy.textContent = "Скопировать";
+      copy.addEventListener("click", async () => {
+        haptic("light");
+        try { await navigator.clipboard.writeText(inviteLink(invite.token)); showNotice("Ссылка скопирована.", "success"); }
+        catch (_) { showNotice(inviteLink(invite.token), ""); }
+      });
+      row.append(copy);
+      if (!invite.revoked) {
+        const revoke = document.createElement("button");
+        revoke.className = "button danger";
+        revoke.type = "button";
+        revoke.textContent = "Отозвать";
+        revoke.addEventListener("click", async () => {
+          haptic("light");
+          try {
+            await api(`/api/admin/invites/${invite.token}`, { method: "DELETE" });
+            showNotice("Приглашение отозвано.", "success");
+            await loadAdminPanel();
+          } catch (error) { showNotice(error.message, "error"); }
+        });
+        row.append(revoke);
+      }
+      card.append(row);
+      nodes.invitesList.append(card);
+    }
+  }
+
+  nodes.inviteCreate.addEventListener("click", async (event) => {
+    setBusy(event.currentTarget, true);
+    try {
+      const maxUses = parseInt(nodes.inviteMax.value.trim() || "0", 10) || 0;
+      const days = parseInt(nodes.inviteDays.value.trim() || "0", 10) || 0;
+      await api("/api/admin/invites", {
+        method: "POST", body: JSON.stringify({ max_uses: maxUses, expires_days: days }),
+      });
+      nodes.inviteMax.value = "";
+      nodes.inviteDays.value = "";
+      showNotice("Ссылка-приглашение создана.", "success");
+      await loadAdminPanel();
+    } catch (error) {
+      showNotice(error.message, "error");
+    } finally {
+      setBusy(event.currentTarget, false);
+    }
+  });
+
+  nodes.adminRefresh.addEventListener("click", async () => {
+    haptic("light");
+    try { await loadAdminPanel(); showNotice("Данные обновлены.", "success"); }
+    catch (error) { showNotice(error.message, "error"); }
+  });
+
   /* ---------- MTProto exact reading ---------- */
   async function refreshMtStatus() {
     let info = null;
@@ -1394,7 +1570,31 @@
     }
     const byPassword = !inTelegram && Boolean(adminKey);
     try {
-      const pinStatus = await api("/api/pin/status");
+      let me = null;
+      try {
+        me = await api("/api/me");
+      } catch (error) {
+        nodes.boot.hidden = false;
+        nodes.app.hidden = true;
+        matrixFx.hide();
+        nodes.bootText.textContent = error.message || "Нет доступа.";
+        showNotice(error.message, "error");
+        return;
+      }
+      // Вход по ссылке-приглашению: привязываем пользователя и обновляем роль.
+      const inviteToken = params.get("invite");
+      if (inviteToken && me.role !== "owner") {
+        try {
+          await api("/api/invites/redeem", { method: "POST", body: JSON.stringify({ token: inviteToken }) });
+          me = await api("/api/me");
+          showNotice("Доступ открыт. Настройте свои каналы.", "success");
+        } catch (error) {
+          showNotice(error.message, "error");
+        }
+      }
+      applyRole(me.role);
+      const isOwner = me.role === "owner";
+      const pinStatus = isOwner ? await api("/api/pin/status") : { enabled: false };
       pinConfigured = Boolean(pinStatus.enabled);
       if (pinConfigured && !byPassword) {
         nodes.boot.hidden = true;
@@ -1405,8 +1605,11 @@
       nodes.app.hidden = false;
       if (byPassword) hapticResult("success");
       await loadConfig();
-      await loadBotSettings();
-      await refreshMtStatus();
+      if (isOwner) {
+        await loadBotSettings();
+        await refreshMtStatus();
+        await loadAdminPanel();
+      }
       await refreshStatus();
     } catch (error) {
       nodes.app.hidden = false;

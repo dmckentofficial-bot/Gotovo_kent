@@ -106,34 +106,80 @@ def _authorize_key(key):
     return bool(stored and pin.verify_pin(stored, key))
 
 
+def _owner_id():
+    raw = (database.get_state("admin_telegram_id", "") or os.environ.get("ADMIN_TELEGRAM_ID", "")).strip()
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _password_user():
-    admin_id = os.environ.get("ADMIN_TELEGRAM_ID", "").strip()
+    admin_id = _owner_id()
     return {
-        "id": int(admin_id) if admin_id.isdigit() else admin_id,
+        "id": admin_id if admin_id is not None else "admin",
         "username": "admin",
         "first_name": "Владелец",
         "auth_method": "password",
+        "role": "owner",
     }
 
 
-def require_admin(
+def require_identity(
+    x_telegram_init_data: str | None = Header(default=None),
+):
+    """Только подпись Telegram без проверки доступа (для входа по инвайту)."""
+    if not x_telegram_init_data:
+        raise HTTPException(
+            status_code=401, detail="Откройте приложение через Telegram.",
+            headers={"X-Requires-Auth": "1"},
+        )
+    try:
+        person = auth.verify_init_data(x_telegram_init_data)
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=401, detail=str(exc), headers={"X-Requires-Auth": "1"}
+        ) from exc
+    database.upsert_user(
+        person.get("id"), person.get("username", ""), person.get("first_name", "")
+    )
+    return person
+
+
+def require_user(
     x_telegram_init_data: str | None = Header(default=None),
     x_admin_key: str | None = Header(default=None),
 ):
+    """Любой допущенный: владелец (пароль/Telegram) или включённый по инвайту."""
     key = (x_admin_key or "").strip()
     if key and _authorize_key(key):
         # Правильный пароль работает всегда и снимает блокировку.
         database.set_state("key_fails", "0")
         database.set_state("key_locked_until", "0")
+        owner = _owner_id()
+        if owner is not None:
+            database.ensure_owner(owner)
         return _password_user()
     if x_telegram_init_data:
         try:
-            return auth.authenticate(x_telegram_init_data, "")
+            person = auth.verify_init_data(x_telegram_init_data)
         except PermissionError as exc:
             logger.warning("Авторизация отклонена: %s", exc)
             raise HTTPException(
                 status_code=401, detail=str(exc), headers={"X-Requires-Auth": "1"}
             ) from exc
+        user_id = person.get("id")
+        owner = _owner_id()
+        if owner is not None and int(user_id) == owner:
+            database.ensure_owner(user_id, person.get("username", ""), person.get("first_name", ""))
+            return {**person, "role": "owner"}
+        user = database.upsert_user(user_id, person.get("username", ""), person.get("first_name", ""))
+        if not user["enabled"]:
+            raise HTTPException(
+                status_code=403,
+                detail="Нет доступа. Попросите у владельца ссылку-приглашение.",
+            )
+        return {**person, "role": user["role"]}
     if key:
         was_locked = _key_locked()
         _register_key_fail()
@@ -147,6 +193,16 @@ def require_admin(
         detail="Введите пароль доступа или откройте приложение через Telegram.",
         headers={"X-Requires-Auth": "1"},
     )
+
+
+def require_admin(
+    x_telegram_init_data: str | None = Header(default=None),
+    x_admin_key: str | None = Header(default=None),
+):
+    user = require_user(x_telegram_init_data, x_admin_key)
+    if user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Раздел только для владельца.")
+    return user
 
 
 def _pin_gate():
@@ -189,6 +245,16 @@ async def lifespan(_app):
     admin_id = stored_admin or os.environ.get("ADMIN_TELEGRAM_ID", "").strip()
     if stored_admin:
         os.environ["ADMIN_TELEGRAM_ID"] = stored_admin
+
+    # Многопользовательность: строка владельца в users + перенос старых
+    # общих настроек/курсоров/истории на его ключ (идемпотентно).
+    try:
+        if admin_id and admin_id.lstrip("-").isdigit():
+            owner_id = int(admin_id)
+            database.ensure_owner(owner_id)
+            database.migrate_legacy_to(database.user_key_for(owner_id))
+    except Exception as exc:  # noqa: BLE001 - без миграции работаем как раньше
+        logger.warning("Миграция данных владельца не удалась: %s", exc)
 
     app_url = os.environ.get("APP_URL") or os.environ.get("RENDER_EXTERNAL_URL", "")
     if telegram.BOT_TOKEN and app_url and admin_id:
@@ -359,13 +425,122 @@ def put_bot(payload: BotPayload, _user=Depends(require_admin)):
     }
 
 
+def _ukey(user):
+    try:
+        return database.user_key_for(int(user.get("id")))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+@app.get("/api/me")
+def me(_user=Depends(require_user)):
+    return {
+        "id": _user.get("id"),
+        "username": _user.get("username", ""),
+        "first_name": _user.get("first_name", ""),
+        "role": _user.get("role", "user"),
+    }
+
+
+class InviteRedeemPayload(BaseModel):
+    token: str = Field(default="", max_length=128)
+
+
+class InviteCreatePayload(BaseModel):
+    max_uses: int = Field(default=0, ge=0, le=1000)
+    expires_days: int = Field(default=0, ge=0, le=365)
+
+
+class UserEnabledPayload(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/invites/redeem")
+def redeem_invite(payload: InviteRedeemPayload, _user=Depends(require_identity)):
+    try:
+        user_id = int(_user.get("id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Войдите через Telegram.")
+    owner = _owner_id()
+    if owner is not None and user_id == owner:
+        return {"ok": True, "message": "У владельца доступ уже есть."}
+    ok, message = database.redeem_invite(payload.token, user_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"ok": True, "message": message}
+
+
+@app.get("/api/admin/users")
+def admin_users(_user=Depends(require_admin)):
+    result = []
+    for user in database.list_users():
+        key = database.user_key_for(user["user_id"])
+        config = database.get_config(key)
+        stats = database.history_stats(key)
+        result.append({
+            "id": user["user_id"],
+            "username": user["username"],
+            "first_name": user["first_name"],
+            "role": user["role"],
+            "enabled": bool(user["enabled"]),
+            "sources": len(config.get("sources", [])),
+            "destinations": len(config.get("destinations") or ([config["destination"]] if config.get("destination") else [])),
+            "forwarding": bool(config.get("enabled")),
+            "forwarded": stats["forwarded"],
+            "errors": stats["errors"],
+            "last_error": database.get_state(database.user_state_key(key, "last_error"), ""),
+        })
+    return result
+
+
+@app.put("/api/admin/users/{user_id}/enabled")
+def admin_user_enabled(user_id: int, payload: UserEnabledPayload, _user=Depends(require_admin)):
+    target = database.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Пользователь не найден.")
+    if target["role"] == "owner":
+        raise HTTPException(status_code=400, detail="Владельца отключить нельзя.")
+    database.set_user_enabled(user_id, payload.enabled)
+    return {"ok": True, "enabled": payload.enabled}
+
+
+@app.delete("/api/admin/users/{user_id}")
+def admin_user_delete(user_id: int, _user=Depends(require_admin)):
+    target = database.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Пользователь не найден.")
+    if target["role"] == "owner":
+        raise HTTPException(status_code=400, detail="Владельца удалить нельзя.")
+    database.delete_user_everything(user_id)
+    return {"ok": True}
+
+
+@app.get("/api/admin/invites")
+def admin_invites(_user=Depends(require_admin)):
+    return database.list_invites()
+
+
+@app.post("/api/admin/invites")
+def admin_invite_create(payload: InviteCreatePayload, _user=Depends(require_admin)):
+    return database.create_invite(payload.max_uses, payload.expires_days)
+
+
+@app.delete("/api/admin/invites/{token}")
+def admin_invite_revoke(token: str, _user=Depends(require_admin)):
+    if not database.get_invite(token):
+        raise HTTPException(status_code=404, detail="Приглашение не найдено.")
+    database.revoke_invite(token)
+    return {"ok": True}
+
+
 @app.get("/api/config")
-def get_config(_user=Depends(require_admin)):
-    return database.get_config()
+def get_config(_user=Depends(require_user)):
+    return database.get_config(_ukey(_user))
 
 
 @app.put("/api/config")
-def put_config(payload: ConfigPayload, _user=Depends(require_admin)):
+def put_config(payload: ConfigPayload, _user=Depends(require_user)):
+    key = _ukey(_user)
     raw_destinations = [value for value in payload.destinations if value.strip()]
     if not raw_destinations and payload.destination.strip():
         raw_destinations = [payload.destination]
@@ -399,7 +574,7 @@ def put_config(payload: ConfigPayload, _user=Depends(require_admin)):
         raise HTTPException(status_code=422, detail="Укажите слова или хэштеги для фильтра.")
 
     config = {
-        **database.get_config(),
+        **database.get_config(key),
         "sources": normalized_sources,
         "destination": normalized_destinations[0],
         "destinations": normalized_destinations,
@@ -407,22 +582,24 @@ def put_config(payload: ConfigPayload, _user=Depends(require_admin)):
         "filter_terms": payload.filter_terms.strip(),
         "filter_mode": payload.filter_mode,
     }
-    database.set_config(config)
+    database.set_config(config, key)
     return {"saved": True, "config": config}
 
 
 @app.post("/api/test")
-def test_connection(_user=Depends(require_admin)):
+def test_connection(_user=Depends(require_user)):
     try:
-        return worker.validate_configuration()
+        return worker.validate_configuration(database.get_config(_ukey(_user)))
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/status")
-def status(_user=Depends(require_admin)):
-    config = database.get_config()
-    last_checked = database.get_state("last_checked")
+def status(_user=Depends(require_user)):
+    key = _ukey(_user) or ""
+    config = database.get_config(_ukey(_user))
+    namespaced_checked = database.get_state(database.user_state_key(key, "last_checked"), "") if key else ""
+    last_checked = namespaced_checked or database.get_state("last_checked")
     destinations = list(config.get("destinations") or [])
     if not destinations and config.get("destination"):
         destinations = [config["destination"]]
@@ -439,27 +616,28 @@ def status(_user=Depends(require_admin)):
         "destination": display[0] if display else "",
         "destinations": display,
         "last_checked": int(last_checked) if last_checked.isdigit() else None,
-        "last_error": database.get_state("last_error"),
+        "last_error": database.get_state(database.user_state_key(key, "last_error"), "") if key else database.get_state("last_error"),
         "menu_error": database.get_state("menu_error"),
     }
 
 
 @app.get("/api/stats")
-def stats(_user=Depends(require_admin)):
-    return database.history_stats()
+def stats(_user=Depends(require_user)):
+    return database.history_stats(_ukey(_user))
 
 
 @app.put("/api/service")
-def set_service(payload: ServicePayload, _user=Depends(require_admin)):
-    config = database.get_config()
+def set_service(payload: ServicePayload, _user=Depends(require_user)):
+    key = _ukey(_user)
+    config = database.get_config(key)
     if payload.enabled:
         try:
-            worker.validate_configuration()
+            worker.validate_configuration(config)
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     config["enabled"] = payload.enabled
-    database.set_config(config)
-    database.set_state("last_error", "")
+    database.set_config(config, key)
+    database.set_state(database.user_state_key(key, "last_error") if key else "last_error", "")
     if payload.enabled:
         # Сразу проверяем источники, не дожидаясь следующего тика воркера.
         threading.Thread(target=worker.poll_once, daemon=True).start()
@@ -467,14 +645,15 @@ def set_service(payload: ServicePayload, _user=Depends(require_admin)):
 
 
 @app.put("/api/signature")
-def put_signature(payload: SignaturePayload, _user=Depends(require_admin)):
+def put_signature(payload: SignaturePayload, _user=Depends(require_user)):
     text = payload.text.strip()
     if payload.enabled and not text:
         raise HTTPException(status_code=422, detail="Введите текст подписи или отключите её.")
-    config = database.get_config()
+    key = _ukey(_user)
+    config = database.get_config(key)
     config["signature_enabled"] = payload.enabled
     config["signature_text"] = text
-    database.set_config(config)
+    database.set_config(config, key)
     return {"saved": True, "signature_enabled": payload.enabled, "signature_text": text}
 
 
@@ -572,8 +751,8 @@ def access_verify(payload: AccessPayload):
 
 
 @app.get("/api/history")
-def history(_user=Depends(require_admin)):
-    return database.recent_history()
+def history(_user=Depends(require_user)):
+    return database.recent_history(user_key=_ukey(_user))
 
 
 @app.get("/")

@@ -9,11 +9,11 @@ from urllib.parse import parse_qsl
 MAX_INIT_DATA_AGE = 24 * 60 * 60
 
 
-def validate_init_data(init_data):
+def verify_init_data(init_data):
+    """Проверяет подпись Telegram и возвращает пользователя (любого)."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    admin_id = os.environ.get("ADMIN_TELEGRAM_ID", "").strip()
-    if not token or not admin_id:
-        raise PermissionError("На сервере не настроены TELEGRAM_BOT_TOKEN и ADMIN_TELEGRAM_ID.")
+    if not token:
+        raise PermissionError("На сервере не задан TELEGRAM_BOT_TOKEN.")
     if not init_data or len(init_data) > 8192:
         raise PermissionError("Откройте приложение через Telegram.")
 
@@ -39,7 +39,15 @@ def validate_init_data(init_data):
         raise PermissionError("Данные авторизации Telegram повреждены.") from exc
     if auth_date > int(time.time()) + 60 or int(time.time()) - auth_date > MAX_INIT_DATA_AGE:
         raise PermissionError("Срок действия данных Telegram истёк. Закройте и снова откройте Mini App.")
-    if not hmac.compare_digest(user_id, admin_id):
+    return user
+
+
+def validate_init_data(init_data):
+    user = verify_init_data(init_data)
+    admin_id = os.environ.get("ADMIN_TELEGRAM_ID", "").strip()
+    if not admin_id:
+        raise PermissionError("На сервере не настроены TELEGRAM_BOT_TOKEN и ADMIN_TELEGRAM_ID.")
+    if not hmac.compare_digest(str(user["id"]), admin_id):
         raise PermissionError("Доступ к приложению разрешён только владельцу бота.")
     return user
 
