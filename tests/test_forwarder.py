@@ -988,6 +988,96 @@ class BotCommandsTests(unittest.TestCase):
 
         self.assertEqual(sent, [])
 
+    def _drain_texts(self, texts, bot_request):
+        from app import telegram, worker
+
+        messages = [
+            {"message_id": 60 + index, "text": text,
+             "chat": {"id": 777, "type": "private"}, "from": {"id": 777}}
+            for index, text in enumerate(texts)
+        ]
+
+        def fake_bot(method, data=None, files=None, timeout=30):
+            if method == "getUpdates":
+                return self._updates(messages)
+            return bot_request(method, data)
+
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "bot_request", side_effect=fake_bot):
+            worker.drain_direct_messages()
+
+    def test_menu_buttons_answer_like_mini_app(self):
+        answers = []
+
+        def bot_request(method, data):
+            answers.append(data.get("text", ""))
+            return {"message_id": 1}
+
+        self._drain_texts(["📊 Статус", "📈 Статистика", "❓ Помощь"], bot_request)
+        self.assertIn("Пересылка", answers[0])
+        self.assertIn("Переслано", answers[1])
+        self.assertIn("Команды", answers[2])
+
+    def test_toggle_button_flips_service(self):
+        from app import database
+
+        answers = []
+
+        def bot_request(method, data):
+            answers.append(data.get("text", ""))
+            return {"message_id": 1}
+
+        self._drain_texts(["▶️ Запустить", "⏹ Остановить"], bot_request)
+        self.assertIn("включена", answers[0].lower())
+        self.assertIn("остановлена", answers[1].lower())
+        self.assertFalse(database.get_config()["enabled"])
+
+    def test_pending_add_flow_takes_link(self):
+        from app import database
+
+        answers = []
+
+        def bot_request(method, data):
+            answers.append(data.get("text", ""))
+            return {"message_id": 1}
+
+        self._drain_texts(["➕ Добавить", "https://t.me/newchanname"], bot_request)
+        self.assertIn("Пришлите", answers[0])
+        self.assertIn("@newchanname добавлен", answers[1])
+        self.assertIn("newchanname", database.get_config()["sources"])
+
+    def test_pending_cancelled_by_command(self):
+        from app import database
+
+        answers = []
+
+        def bot_request(method, data):
+            answers.append(data.get("text", ""))
+            return {"message_id": 1}
+
+        self._drain_texts(["➕ Добавить", "/list"], bot_request)
+        self.assertIn("Пришлите", answers[0])
+        self.assertIn("Источники", answers[1])
+        self.assertNotIn("newchanname", database.get_config()["sources"])
+
+    def test_every_answer_carries_main_keyboard(self):
+        payloads = []
+
+        def bot_request(method, data):
+            if method == "sendMessage":
+                payloads.append(data)
+            return {"message_id": 1}
+
+        with patch.dict("os.environ", {"APP_URL": "https://example.com"}):
+            self._drain_texts(["📊 Статус"], bot_request)
+
+        markup = json.loads(payloads[0]["reply_markup"])
+        flat = [button.get("text", "") for row in markup["keyboard"] for button in row]
+        self.assertIn("📱 Открыть приложение", flat)
+        self.assertIn("📊 Статус", flat)
+        app_button = [b for row in markup["keyboard"] for b in row if b.get("web_app")][0]
+        self.assertEqual(app_button["web_app"]["url"], "https://example.com/")
+
     def test_start_command_answers_with_help(self):
         from app import telegram, worker
 

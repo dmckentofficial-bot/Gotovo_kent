@@ -17,6 +17,10 @@ HELP_TEXT = (
     "Я принимаю пересланные посты и публикую их в канал назначения один в один: "
     "текст, фото и видео в оригинале, кнопки.\n\n"
     "Просто перешлите мне любой пост из любого канала.\n\n"
+    "Кнопки меню делают то же, что вкладки приложения:\n"
+    "▶️/⏹ — запустить/остановить, 📊 — статус, 📈 — статистика,\n"
+    "📋 — каналы, ➕/➖ — добавить/убрать источник, 🎯 — назначение,\n"
+    "✅ — проверка, ❓ — помощь.\n\n"
     "Команды:\n"
     "/status — состояние пересылки\n"
     "/stats — счётчики\n"
@@ -30,6 +34,19 @@ HELP_TEXT = (
 )
 
 MAX_SOURCES = 5
+
+# Кнопки меню (текст кнопок приходит обычным сообщением).
+BTN_RUN = "▶️ Запустить"
+BTN_STOP = "⏹ Остановить"
+BTN_STATUS = "📊 Статус"
+BTN_STATS = "📈 Статистика"
+BTN_LIST = "📋 Каналы"
+BTN_ADD = "➕ Добавить"
+BTN_DEL = "➖ Убрать"
+BTN_DEST = "🎯 Назначение"
+BTN_TEST = "✅ Проверка"
+BTN_HELP = "❓ Помощь"
+BTN_APP = "📱 Открыть приложение"
 
 
 def _owner_id():
@@ -49,20 +66,80 @@ def _mini_app_keyboard():
     url = _app_url()
     if not url:
         return None
-    return {"keyboard": [[{"text": "📱 Открыть приложение", "web_app": {"url": f"{url}/"}}]],
+    return {"keyboard": [[{"text": BTN_APP, "web_app": {"url": f"{url}/"}}]],
             "resize_keyboard": True, "is_persistent": True}
+
+
+def _main_keyboard():
+    """Полное меню как в Mini App: управление + кнопка приложения."""
+    config = database.get_config()
+    toggle = BTN_STOP if config.get("enabled") else BTN_RUN
+    rows = [
+        [{"text": toggle}, {"text": BTN_STATUS}],
+        [{"text": BTN_STATS}, {"text": BTN_TEST}],
+        [{"text": BTN_LIST}, {"text": BTN_ADD}],
+        [{"text": BTN_DEL}, {"text": BTN_DEST}],
+        [{"text": BTN_HELP}],
+    ]
+    url = _app_url()
+    if url:
+        rows.insert(0, [{"text": BTN_APP, "web_app": {"url": f"{url}/"}}])
+    return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
 
 
 def _answer_private(chat_id, text, keyboard=False):
     try:
         payload = {"chat_id": chat_id, "text": text}
-        if keyboard:
+        if keyboard == "main":
+            payload["reply_markup"] = json.dumps(_main_keyboard())
+        elif keyboard:
             markup = _mini_app_keyboard()
             if markup:
                 payload["reply_markup"] = json.dumps(markup)
         telegram.bot_request("sendMessage", payload, timeout=30)
     except RuntimeError:
         pass
+
+
+def _pending_key():
+    return "bot_pending"
+
+
+def _set_pending(chat_id, action):
+    database.set_state(_pending_key(), json.dumps({"chat": chat_id, "action": action}))
+
+
+def _take_pending(chat_id):
+    raw = database.get_state(_pending_key(), "")
+    database.set_state(_pending_key(), "")
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return ""
+    if not isinstance(data, dict) or data.get("chat") != chat_id:
+        return ""
+    return data.get("action", "")
+
+
+def _clear_pending():
+    database.set_state(_pending_key(), "")
+
+
+PENDING_ASK = {
+    "add": "Пришлите @канал или ссылку t.me — добавлю в источники.",
+    "del": "Пришлите @канал или номер из списка — уберу из источников.",
+    "dest": "Пришлите @канал или ссылку t.me — станет назначением.",
+}
+
+
+def _consume_pending(action, argument):
+    if action == "add":
+        return _cmd_add(argument)
+    if action == "del":
+        return _cmd_delete(argument)
+    if action == "dest":
+        return _cmd_destination(argument)
+    return ""
 
 
 def _save_sources(sources):
@@ -267,17 +344,43 @@ def drain_direct_messages():
             continue
         text = message.get("text", "")
         if text.startswith("/start"):
-            _answer_private(chat.get("id"), HELP_TEXT, keyboard=True)
+            _answer_private(chat.get("id"), HELP_TEXT, keyboard="main")
             continue
         if text.startswith("/id"):
             _answer_private(chat.get("id"), f"Ваш Telegram ID: {sender.get('id')}")
             continue
         if owner_id is not None and sender.get("id") != owner_id:
             continue
+        if text in (BTN_RUN, BTN_STOP, BTN_STATUS, BTN_STATS, BTN_LIST, BTN_TEST, BTN_HELP, BTN_ADD, BTN_DEL, BTN_DEST):
+            _clear_pending()
+            if text == BTN_RUN:
+                _answer_private(chat.get("id"), _cmd_set_enabled(True), keyboard="main")
+            elif text == BTN_STOP:
+                _answer_private(chat.get("id"), _cmd_set_enabled(False), keyboard="main")
+            elif text == BTN_STATUS:
+                _answer_private(chat.get("id"), _cmd_status(), keyboard="main")
+            elif text == BTN_STATS:
+                _answer_private(chat.get("id"), _cmd_stats(), keyboard="main")
+            elif text == BTN_LIST:
+                _answer_private(chat.get("id"), _cmd_list(), keyboard="main")
+            elif text == BTN_TEST:
+                _answer_private(chat.get("id"), _cmd_test(), keyboard="main")
+            elif text == BTN_HELP:
+                _answer_private(chat.get("id"), HELP_TEXT, keyboard="main")
+            else:
+                action = {"➕ Добавить": "add", "➖ Убрать": "del"}.get(text, "dest")
+                _set_pending(chat.get("id"), action)
+                _answer_private(chat.get("id"), PENDING_ASK[action], keyboard="main")
+            continue
         if text.startswith("/"):
+            _clear_pending()
             answer = _handle_owner_command(text)
             if answer:
-                _answer_private(chat.get("id"), answer)
+                _answer_private(chat.get("id"), answer, keyboard="main")
+            continue
+        pending_action = _take_pending(chat.get("id"))
+        if pending_action:
+            _answer_private(chat.get("id"), _consume_pending(pending_action, text), keyboard="main")
             continue
         preview = {
             "id": str(message_id),
