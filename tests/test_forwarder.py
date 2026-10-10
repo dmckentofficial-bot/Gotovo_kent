@@ -967,6 +967,59 @@ class BotCommandsTests(unittest.TestCase):
         button = markup["keyboard"][0][0]
         self.assertEqual(button["web_app"]["url"], "https://example.com/")
 
+    def test_answer_counter_increments_and_errors_recorded(self):
+        from app import database, telegram, worker
+
+        message = {
+            "message_id": 70, "text": "/id",
+            "chat": {"id": 777, "type": "private"}, "from": {"id": 777},
+        }
+
+        def fake_bot(method, data=None, files=None, timeout=30):
+            if method == "getUpdates":
+                return self._updates([message])
+            if method == "sendMessage":
+                raise RuntimeError("Telegram Bot API (403): bot was blocked")
+            return {"message_id": 1}
+
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "bot_request", side_effect=fake_bot):
+            worker.drain_direct_messages()
+
+        self.assertEqual(database.get_state("bot_answers_sent", "0"), "0")
+        self.assertIn("blocked", database.get_state("bot_answer_error", ""))
+
+    def test_one_broken_update_does_not_block_next(self):
+        from app import database, telegram, worker
+
+        bad = {"update_id": 300}  # без message: обработчик упадёт
+        good = {
+            "message_id": 71, "text": "/id",
+            "chat": {"id": 777, "type": "private"}, "from": {"id": 777},
+        }
+        seen = []
+
+        def fake_bot(method, data=None, files=None, timeout=30):
+            if method == "getUpdates":
+                return [bad, {"update_id": 301, "message": good}]
+            seen.append(method)
+            return {"message_id": 1}
+
+        real_handler = worker._handle_private_update
+
+        def flaky(update, owner_id, destination):
+            if "message" not in update:
+                raise KeyError("message")
+            return real_handler(update, owner_id, destination)
+
+        with patch.object(telegram, "BOT_TOKEN", "123:test"), \
+             patch.object(telegram, "bot_request", side_effect=fake_bot), \
+             patch.object(worker, "_handle_private_update", side_effect=flaky):
+            worker.drain_direct_messages()
+
+        self.assertIn("sendMessage", seen)
+        self.assertIn("update 300", database.get_state("bot_answer_error", ""))
+
     def test_stranger_command_gets_no_answer(self):
         from app import telegram, worker
 
