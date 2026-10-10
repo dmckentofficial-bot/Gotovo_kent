@@ -192,6 +192,7 @@ def poll_once():
                 try:
                     posts = mt_reader.fetch_recent(source, limit=20)
                     exact_mode = True
+                    database.set_state("mt_last_ok", int(time.time()))
                 except Exception as exc:
                     note = f"@{source}: точное чтение недоступно ({exc}), читаю превью."
                     database.set_state("last_error", note)

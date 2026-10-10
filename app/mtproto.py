@@ -46,7 +46,9 @@ TEST_API_ID = "2040"
 TEST_API_HASH = "b18441a1ff607e10a989891a5462e627"
 
 
-# ---------- собственный поток с event loop (Telethon нельзя дёргать из чужих потоков) ----------
+# ВАЖНО: одну сессию держит только долгоживущий клиент серверного процесса.
+# Разовые скрипты/проверки с той же сессией Telegram может счесть угоном
+# и отозвать её — для проверок используйте моки, а не живые подключения.
 
 _loop = None
 _thread = None
@@ -288,6 +290,8 @@ async def _submit_password(password):
 async def _status():
     creds = get_credentials()
     result = {"configured": is_configured(), "connected": False, "authorized": False, "user": ""}
+    last_ok = database.get_state("mt_last_ok", "")
+    result["last_exact"] = int(last_ok) if last_ok.isdigit() else None
     if not creds["api_id"]:
         return result
     try:
