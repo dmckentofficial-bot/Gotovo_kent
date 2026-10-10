@@ -20,7 +20,7 @@ HELP_TEXT = (
     "Кнопки меню делают то же, что вкладки приложения:\n"
     "▶️/⏹ — запустить/остановить, 📊 — статус, 📈 — статистика,\n"
     "📋 — копируемые каналы, 📢 — свои каналы, ➕/➖ — добавить/убрать источник,\n"
-    "🎯 — назначение, ✅ — проверка, ❓ — помощь.\n\n"
+    "✅ — проверка, ❓ — помощь.\n\n"
     "Команды:\n"
     "/status — состояние пересылки\n"
     "/stats — счётчики\n"
@@ -46,7 +46,6 @@ BTN_LIST = "📋 Каналы (Cop)"
 BTN_MY = "📢 Мои каналы"
 BTN_ADD = "➕ Добавить"
 BTN_DEL = "➖ Убрать"
-BTN_DEST = "🎯 Назначение"
 BTN_TEST = "✅ Проверка"
 BTN_HELP = "❓ Помощь"
 BTN_APP = "📱 Открыть приложение"
@@ -94,7 +93,7 @@ def _main_keyboard():
         [{"text": BTN_STATS}, {"text": BTN_TEST}],
         [{"text": BTN_LIST}, {"text": BTN_MY}],
         [{"text": BTN_ADD}, {"text": BTN_DEL}],
-        [{"text": BTN_DEST}, {"text": BTN_HELP}],
+        [{"text": BTN_HELP}],
     ]
     url = _app_url()
     if url:
@@ -467,7 +466,7 @@ def _handle_private_update(update, owner_id, destinations):
     if owner_id is not None and sender.get("id") != owner_id:
         return
     if text in (BTN_RUN, BTN_STOP, BTN_STATUS, BTN_STATS, BTN_LIST, BTN_MY,
-                BTN_TEST, BTN_HELP, BTN_ADD, BTN_DEL, BTN_DEST):
+                BTN_TEST, BTN_HELP, BTN_ADD, BTN_DEL):
         _clear_pending()
         if text == BTN_RUN:
             _answer_private(chat.get("id"), _cmd_set_enabled(True), keyboard="main")
@@ -487,7 +486,7 @@ def _handle_private_update(update, owner_id, destinations):
         elif text == BTN_HELP:
             _answer_private(chat.get("id"), HELP_TEXT, keyboard="main")
         else:
-            action = {BTN_ADD: "add", BTN_DEL: "del"}.get(text, "dest")
+            action = "add" if text == BTN_ADD else "del"
             _set_pending(chat.get("id"), action)
             _answer_private(chat.get("id"), PENDING_ASK[action], keyboard="main")
         return
